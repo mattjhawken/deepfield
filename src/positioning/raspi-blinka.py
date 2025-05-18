@@ -13,10 +13,12 @@ try:
 except ImportError:
     raise RuntimeError("The library 'adafruit_shell' was not found. To install, try typing: sudo pip3 install adafruit-python-shell")
 
+
 shell = Shell()
 shell.group="Blinka"
 default_python = 3
 blinka_minimum_python_version = 3.7
+
 
 def default_python_version(numeric=True):
     version = shell.run_command("python -c 'import platform; print(platform.python_version())'", suppress_message=True, return_output=True)
@@ -27,11 +29,13 @@ def default_python_version(numeric=True):
             return None
     return version
 
+
 def get_python3_version(numeric=True):
     version = shell.run_command("python3 -c 'import platform; print(platform.python_version())'", suppress_message=True, return_output=True)
     if numeric:
         return float(version[0:version.rfind(".")])
     return version
+
 
 def check_blinka_python_version():
     """
@@ -47,6 +51,7 @@ def check_blinka_python_version():
 
     shell.bail("Blinka requires a minimum of Python version {} to install, current one is {}. Please update your OS!".format(blinka_minimum_python_version, current))
 
+
 def sys_update():
     print("Updating System Packages")
     if not shell.run_command("sudo apt-get update --allow-releaseinfo-change"):
@@ -54,6 +59,7 @@ def sys_update():
     print("Upgrading packages...")
     if not shell.run_command("sudo apt-get -y upgrade"):
         shell.bail("Apt failed to install software!")
+
 
 def set_raspiconfig():
     """
@@ -72,6 +78,7 @@ def set_raspiconfig():
     print("Disable raspi-config at Boot")
     shell.run_command("sudo raspi-config nonint disable_raspi_config_at_boot 0")
 
+
 def update_python():
     print("Making sure Python 3 is the default")
     if default_python < 3:
@@ -80,9 +87,11 @@ def update_python():
         shell.run_command("sudo update-alternatives --install /usr/bin/python python $(which python3) 2")
         shell.run_command("sudo update-alternatives --skip-auto --config python")
 
+
 def update_pip():
     print("Making sure PIP and setuptools is installed")
     shell.run_command("sudo apt-get install --upgrade -y python3-pip python3-setuptools")
+
 
 def install_blinka(user=False):
     print("Installing latest version of Blinka locally")
@@ -93,6 +102,7 @@ def install_blinka(user=False):
         username = os.environ["SUDO_USER"]
     shell.run_command(f"{pip_command} RPi.GPIO", run_as_user=username)
     shell.run_command(f"{pip_command} adafruit-blinka", run_as_user=username)
+
 
 def main():
     global default_python
@@ -135,6 +145,7 @@ Raspberry Pi and installs Blinka
 Settings take effect on next boot.
 """)
     shell.prompt_reboot()
+
 
 # Main function
 if __name__ == "__main__":

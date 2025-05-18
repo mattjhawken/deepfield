@@ -1,0 +1,21 @@
+[project]
+name = "hydra"
+version = "0.1.0"
+description = "An open-source distributed radio telescope and plug-and-play P2P network for collaborative mapping of 1.4 GHz hydrogen line emissions."
+authors = [
+    {name = "mattjhawken",email = "mattjhawken@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.poetry.dependencies]
+pyrtlsdr = "^0.3.0"
+serial = "^0.0.97"
+pynmea2 = "^1.19.0"
+matplotlib = "^3.10.3"
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
