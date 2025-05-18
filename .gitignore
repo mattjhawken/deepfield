@@ -1,6 +1,16 @@
-venv
-prints
-parts
-designs
-data
-*.png
+# Ignore build artifacts from the local testing sub-crate.
+*target/
+*venv/
+*keys/
+*dist/
+*logs/
+*models/
+*tmp/
+*build/
+*tensorlink.egg-info/
+*.idea
+*.env
+.DS_Store
+*.rs.bk
+*.pem
+**/seed.txt
