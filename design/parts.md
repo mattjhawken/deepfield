@@ -16,6 +16,7 @@ Wavelength λ: 211 mm
 Element diameter d: 3 mm
 Boom diameter D: 15 mm
 
+```
 Total number of elements: 14
 Boom length: 765 mm
 Gain: 15.7 dBi (approx.)
@@ -62,4 +63,5 @@ Distance D7-D8: 69.7 mm
 Length D9: 89.3 mm
 Director position D9 (R-D9): 526 mm
 Distance D8-D9: 72.8 mm
+```
 
