@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hydrogen Line Scanner Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 50%, #16213e 100%);
+            color: #ffffff;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        .header {
+            background: rgba(0, 0, 0, 0.3);
+            backdrop-filter: blur(10px);
+            text-align: center;
+            padding: 30px 20px;
+            border-bottom: 2px solid rgba(76, 175, 80, 0.3);
+            position: relative;
+        }
+
+        .header::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: radial-gradient(circle at 50% 50%, rgba(76, 175, 80, 0.1) 0%, transparent 70%);
+            pointer-events: none;
+        }
+
+        .header h1 {
+            background: linear-gradient(45deg, #4CAF50, #81C784);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-size: 3em;
+            margin-bottom: 10px;
+            text-shadow: 0 0 20px rgba(76, 175, 80, 0.5);
+            animation: pulse 3s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.02); }
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+            animation: blink 2s infinite;
+        }
+
+        .status-idle { background: #ff9800; }
+        .status-calibrating { background: #2196f3; }
+        .status-scanning { background: #4caf50; }
+        .status-complete { background: #9c27b0; }
+        .status-interrupted { background: #f44336; }
+
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0.3; }
+        }
+
+        .dashboard {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 20px;
+            padding: 20px;
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 20px;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, #4CAF50, #81C784, #4CAF50);
+            animation: shimmer 2s linear infinite;
+        }
+
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 20px 40px rgba(76, 175, 80, 0.2);
+            border-color: rgba(76, 175, 80, 0.3);
+        }
+
+        .card h2 {
+            color: #4CAF50;
+            margin-bottom: 15px;
+            font-size: 1.4em;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .card-icon {
+            font-size: 1.2em;
+            animation: rotate 4s linear infinite;
+        }
+
+        @keyframes rotate {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .stat-item {
+            background: rgba(255, 255, 255, 0.03);
+            padding: 15px;
+            border-radius: 10px;
+            text-align: center;
+            transition: all 0.3s ease;
+        }
+
+        .stat-item:hover {
+            background: rgba(76, 175, 80, 0.1);
+            transform: scale(1.05);
+        }
+
+        .stat-value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #4CAF50;
+            display: block;
+            margin-bottom: 5px;
+        }
+
+        .stat-label {
+            font-size: 0.9em;
+            color: #b0b0b0;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .progress-container {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 3px;
+            margin: 15px 0;
+            overflow: hidden;
+        }
+
+        .progress-bar {
+            height: 20px;
+            background: linear-gradient(90deg, #4CAF50, #81C784);
+            border-radius: 8px;
+            transition: width 0.5s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .progress-bar::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
+            animation: progress-shine 1.5s linear infinite;
+        }
+
+        @keyframes progress-shine {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+
+        .progress-text {
+            text-align: center;
+            margin-top: 5px;
+            font-size: 0.9em;
+            color: #b0b0b0;
+        }
+
+        .plot-container {
+            grid-column: span 2;
+            background: rgba(255, 255, 255, 0.02);
+            border-radius: 15px;
+            padding: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .plot-tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .tab {
+            padding: 10px 20px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 25px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 0.9em;
+        }
+
+        .tab.active {
+            background: linear-gradient(45deg, #4CAF50, #81C784);
+            color: #000;
+            font-weight: bold;
+            transform: scale(1.05);
+        }
+
+        .tab:hover:not(.active) {
+            background: rgba(76, 175, 80, 0.2);
+            border-color: rgba(76, 175, 80, 0.3);
+        }
+
+        .plot-area {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 10px;
+            padding: 20px;
+            min-height: 300px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+
+        .plot-area img {
+            max-width: 100%;
+            max-height: 100%;
+            border-radius: 8px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+        }
+
+        .no-data {
+            color: #666;
+            font-style: italic;
+            text-align: center;
+        }
+
+        .current-measurement {
+            background: rgba(76, 175, 80, 0.1);
+            border: 1px solid rgba(76, 175, 80, 0.3);
+            border-radius: 10px;
+            padding: 15px;
+            margin: 15px 0;
+            text-align: center;
+        }
+
+        .current-coords {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #4CAF50;
+            margin-bottom: 5px;
+        }
+
+        .current-power {
+            font-size: 1.2em;
+            color: #81C784;
+        }
+
+        .detection-alerts {
+            margin-top: 20px;
+        }
+
+        .alert {
+            padding: 10px 15px;
+            border-radius: 8px;
+            margin: 10px 0;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from { transform: translateX(-100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+
+        .alert-3sigma {
+            background: rgba(255, 152, 0, 0.2);
+            border: 1px solid rgba(255, 152, 0, 0.5);
+            color: #ffab40;
+        }
+
+        .alert-5sigma {
+            background: rgba(244, 67, 54, 0.2);
+            border: 1px solid rgba(244, 67, 54, 0.5);
+            color: #ff5252;
+            animation: pulse 1s ease infinite;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 250px;
+            margin: 20px 0;
+        }
+
+        .connection-status {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 10px 20px;
+            border-radius: 25px;
+            font-size: 0.9em;
+            font-weight: bold;
+            transition: all 0.3s ease;
+            z-index: 1000;
+        }
+
+        .connected {
+            background: rgba(76, 175, 80, 0.2);
+            border: 1px solid rgba(76, 175, 80, 0.5);
+            color: #4CAF50;
+        }
+
+        .disconnected {
+            background: rgba(244, 67, 54, 0.2);
+            border: 1px solid rgba(244, 67, 54, 0.5);
+            color: #f44336;
+            animation: pulse 1s ease infinite;
+        }
+
+        @media (max-width: 1200px) {
+            .dashboard {
+                grid-template-columns: 1fr 1fr;
+            }
+            .plot-container {
+                grid-column: span 2;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .dashboard {
+                grid-template-columns: 1fr;
+            }
+            .plot-container {
+                grid-column: span 1;
+            }
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="connection-status" id="connectionStatus">
+        <span class="status-indicator"></span>
+        Connecting...
+    </div>
+
+    <div class="header">
+        <h1>🔭 Hydrogen Line Scanner</h1>
+        <div id="statusDisplay">
+            <span class="status-indicator status-idle"></span>
+            <span id="statusText">Idle</span>
+        </div>
+    </div>
+
+    <div class="dashboard">
+        <!-- Status and Progress Card -->
+        <div class="card">
+            <h2><span class="card-icon">📊</span>System Status</h2>
+            <div class="progress-container">
+                <div class="progress-bar" id="progressBar" style="width: 0%"></div>
+            </div>
+            <div class="progress-text" id="progressText">0%</div>
+
+            <div class="current-measurement" id="currentMeasurement">
+                <div class="current-coords" id="currentCoords">(0, 0)</div>
+                <div class="current-power" id="currentPower">0.00 dB</div>
+            </div>
+        </div>
+
+        <!-- Statistics Card -->
+        <div class="card">
+            <h2><span class="card-icon">📈</span>Statistics</h2>
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <span class="stat-value" id="totalPoints">0</span>
+                    <span class="stat-label">Total Points</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-value" id="maxSignal">0.00</span>
+                    <span class="stat-label">Max Signal (dB)</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-value" id="detections3sigma">0</span>
+                    <span class="stat-label">3σ Detections</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-value" id="detections5sigma">0</span>
+                    <span class="stat-label">5σ Detections</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Baseline Info Card -->
+        <div class="card">
+            <h2><span class="card-icon">🎯</span>Baseline</h2>
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <span class="stat-value" id="baselineLevel">0.00</span>
+                    <span class="stat-label">Level (dB)</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-value" id="baselineStd">0.00</span>
+                    <span class="stat-label">Std Dev (dB)</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-value" id="threshold3sigma">0.00</span>
+                    <span class="stat-label">3σ Threshold</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-value" id="threshold5sigma">0.00</span>
+                    <span class="stat-label">5σ Threshold</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Plot Container -->
+        <div class="plot-container">
+            <h2><span class="card-icon">📡</span>Data Visualization</h2>
+            <div class="plot-tabs">
+                <div class="tab active" data-plot="skymap">Sky Map</div>
+                <div class="tab" data-plot="recent">Recent Data</div>
+                <div class="tab" data-plot="distribution">Distribution</div>
+                <div class="tab" data-plot="realtime">Real-time</div>
+            </div>
+            <div class="plot-area" id="plotArea">
+                <div class="no-data">No data available</div>
+            </div>
+        </div>
+
+        <!-- Real-time Chart -->
+        <div class="card">
+            <h2><span class="card-icon">⚡</span>Live Signal</h2>
+            <div class="chart-container">
+                <canvas id="realtimeChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Alerts -->
+        <div class="card">
+            <h2><span class="card-icon">🚨</span>Detection Alerts</h2>
+            <div class="detection-alerts" id="detectionAlerts">
+                <div class="no-data">No detections yet</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global variables
+        let socket;
+        let currentData = {};
+        let realtimeChart;
+        let realtimeData = [];
+        let activeTab = 'skymap';
+        let alertCount = 0;
+
+        // Initialize WebSocket connection
+        function initializeWebSocket() {
+            socket = io();
+
+            socket.on('connect', function() {
+                console.log('Connected to server');
+                updateConnectionStatus(true);
+            });
+
+            socket.on('disconnect', function() {
+                console.log('Disconnected from server');
+                updateConnectionStatus(false);
+            });
+
+            socket.on('data_update', function(data) {
+                currentData = data;
+                updateDashboard(data);
+            });
+
+            socket.on('connect_error', function(error) {
+                console.error('Connection error:', error);
+                updateConnectionStatus(false);
+            });
+        }
+
+        // Update connection status indicator
+        function updateConnectionStatus(connected) {
+            const statusEl = document.getElementById('connectionStatus');
+            const indicator = statusEl.querySelector('.status-indicator');
+
+            if (connected) {
+                statusEl.className = 'connection-status connected';
+                statusEl.innerHTML = '<span class="status-indicator"></span>Connected';
+            } else {
+                statusEl.className = 'connection-status disconnected';
+                statusEl.innerHTML = '<span class="status-indicator"></span>Disconnected';
+            }
+        }
+
+        // Update dashboard with new data
+        function updateDashboard(data) {
+            // Update status
+            updateStatus(data.status, data.progress);
+
+            // Update current measurement
+            updateCurrentMeasurement(data.current_measurement);
+
+            // Update statistics
+            updateStatistics(data.stats);
+
+            // Update plots
+            updatePlots(data.plots);
+
+            // Update real-time chart
+            updateRealtimeChart(data.current_measurement);
+
+            // Check for detections
+            checkDetections(data.current_measurement, data.stats);
+        }
+
+        // Update status display
+        function updateStatus(status, progress) {
+            const statusText = document.getElementById('statusText');
+            const statusIndicator = document.querySelector('#statusDisplay .status-indicator');
+            const progressBar = document.getElementById('progressBar');
+            const progressText = document.getElementById('progressText');
+
+            // Update status text and indicator
+            statusText.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+            statusIndicator.className = `status-indicator status-${status}`;
+
+            // Update progress bar
+            progressBar.style.width = `${progress}%`;
+            progressText.textContent = `${progress.toFixed(1)}%`;
+        }
+
+        // Update current measurement display
+        function updateCurrentMeasurement(measurement) {
+            const coords = document.getElementById('currentCoords');
+            const power = document.getElementById('currentPower');
+
+            coords.textContent = `(${measurement.x}, ${measurement.y})`;
+            power.textContent = `${measurement.power.toFixed(2)} dB`;
+        }
+
+        // Update statistics
+        function updateStatistics(stats) {
+            document.getElementById('totalPoints').textContent = stats.total_points;
+            document.getElementById('maxSignal').textContent = stats.max_signal.toFixed(2);
+            document.getElementById('detections3sigma').textContent = stats.detections_3sigma;
+            document.getElementById('detections5sigma').textContent = stats.detections_5sigma;
+
+            document.getElementById('baselineLevel').textContent = stats.baseline_level.toFixed(2);
+            document.getElementById('baselineStd').textContent = stats.baseline_std.toFixed(2);
+            document.getElementById('threshold3sigma').textContent = (3 * stats.baseline_std).toFixed(2);
+            document.getElementById('threshold5sigma').textContent = (5 * stats.baseline_std).toFixed(2);
+        }
+
+        // Update plots
+        function updatePlots(plots) {
+            if (plots && plots[activeTab]) {
+                const plotArea = document.getElementById('plotArea');
+                plotArea.innerHTML = `<img src="${plots[activeTab]}" alt="${activeTab} plot">`;
+            }
+        }
+
+        // Update real-time chart
+        function updateRealtimeChart(measurement) {
+            if (!realtimeChart) return;
+
+            const now = new Date();
+            realtimeData.push({
+                x: now,
+                y: measurement.power
+            });
+
+            // Keep only last 50 points
+            if (realtimeData.length > 50) {
+                realtimeData.shift();
+            }
+
+            realtimeChart.data.datasets[0].data = realtimeData;
+            realtimeChart.update('none');
+        }
+
+        // Check for detections and show alerts
+        function checkDetections(measurement, stats) {
+            if (stats.baseline_std === 0) return;
+
+            const sigma3 = 3 * stats.baseline_std;
+            const sigma5 = 5 * stats.baseline_std;
+
+            if (measurement.power > sigma5) {
+                showAlert('5sigma', `5σ Detection at (${measurement.x}, ${measurement.y}): ${measurement.power.toFixed(2)} dB`);
+            } else if (measurement.power > sigma3) {
+                showAlert('3sigma', `3σ Detection at (${measurement.x}, ${measurement.y}): ${measurement.power.toFixed(2)} dB`);
+            }
+        }
+
+        // Show detection alert
+        function showAlert(type, message) {
+            const alertsContainer = document.getElementById('detectionAlerts');
+
+            // Remove "no data" message
+            if (alertsContainer.querySelector('.no-data')) {
+                alertsContainer.innerHTML = '';
+            }
+
+            const alert = document.createElement('div');
+            alert.className = `alert alert-${type}`;
+            alert.textContent = message;
+
+            alertsContainer.appendChild(alert);
+
+            // Keep only last 10 alerts
+            const alerts = alertsContainer.querySelectorAll('.alert');
+            if (alerts.length > 10) {
+                alerts[0].remove();
+            }
+        }
+
+        // Initialize real-time chart
+        function initializeRealtimeChart() {
+            const ctx = document.getElementById('realtimeChart').getContext('2d');
+
+            realtimeChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: [{
+                        label: 'Signal Power',
+                        data: [],
+                        borderColor: '#4CAF50',
+                        backgroundColor: 'rgba(76, 175, 80, 0.1)',
+                        tension: 0.4,
+                        pointRadius: 2,
+                        pointHoverRadius: 5,
+                        borderWidth: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    },
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'second'
+                            },
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.1)'
+                            },
+                            ticks: {
+                                color: '#b0b0b0'
+                            }
+                        },
+                        y: {
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.1)'
+                            },
+                            ticks: {
+                                color: '#b0b0b0'
+                            }
+                        }
+                    },
+                    interaction: {
+                        intersect: false,
+                        mode: 'index'
+                    }
+                }
+            });
+        }
+
+        // Handle tab switching
+        function setupTabSwitching() {
+            const tabs = document.querySelectorAll('.tab');
+
+            tabs.forEach(tab => {
+                tab.addEventListener('click', function() {
+                    // Remove active class from all tabs
+                    tabs.forEach(t => t.classList.remove('active'));
+
+                    // Add active class to clicked tab
+                    this.classList.add('active');
+
+                    // Update active tab
+                    activeTab = this.dataset.plot;
+
+                    // Update plot if data is available
+                    if (currentData.plots && currentData.plots[activeTab]) {
+                        updatePlots(currentData.plots);
+                    } else {
+                        document.getElementById('plotArea').innerHTML = '<div class="no-data">No data available</div>';
+                    }
+                });
+            });
+        }
+
+        // Initialize dashboard
+        function initializeDashboard() {
+            initializeWebSocket();
+            initializeRealtimeChart();
+            setupTabSwitching();
+
+            // Add some visual flair
+            setTimeout(() => {
+                document.body.style.opacity = '1';
+                document.body.style.transform = 'translateY(0)';
+            }, 100);
+        }
+
+        // Initialize when page loads
+        document.addEventListener('DOMContentLoaded', initializeDashboard);
+
+        // Handle page visibility changes
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden) {
+                // Pause updates when tab is hidden
+                if (socket) socket.disconnect();
+            } else {
+                // Resume updates when tab becomes visible
+                initializeWebSocket();
+            }
+        });
+    </script>
+</body>
+</html>
