@@ -300,8 +300,9 @@ class HydrogenScanner:
         )
         self.scan_thread.start()
 
-    def run_scan_web(self, x_steps=15, y_steps=15, measurement_time=1.0):
-        """Web-controlled scan"""
+    def run_scan_web(self, x_steps=15, y_steps=15, measurement_time=1.0,
+                     x_step_size=4, y_step_size=4):
+        """Web-controlled scan with configurable step sizes"""
         self.scanning = True
 
         with self.data_lock:
@@ -335,7 +336,6 @@ class HydrogenScanner:
                         'timestamp': time.time()
                     })
 
-                    # Update arrays
                     self.sky_map[y, x] = calibrated_power
                     self.live_data.append(calibrated_power)
 
@@ -349,7 +349,6 @@ class HydrogenScanner:
                         }
                         self.web_data['progress'] = progress
 
-                        # Update stats
                         detections_3sigma = int(np.sum(self.sky_map > 3 * self.baseline_std))
                         detections_5sigma = int(np.sum(self.sky_map > 5 * self.baseline_std))
                         max_signal = float(np.max(self.sky_map))
@@ -361,24 +360,24 @@ class HydrogenScanner:
                             'total_points': len(self.scan_data)
                         })
 
-                        # Update plots periodically
                         if points_completed % 10 == 0:
                             self.update_plots()
 
                     self.emit_web_update()
 
-                    # Move to next position (simulation - replace with actual motor control)
+                    # Move X (horizontal scan)
                     if x < x_steps - 1:
-                        self.move_motor('x', stepper.FORWARD, 2)
+                        self.move_motor('x', stepper.FORWARD, x_step_size)
 
-                    time.sleep(0.1)  # Small delay
+                    time.sleep(0.1)
 
-                # Move to next row (simulation)
+                # Move Y (next row)
                 if y < y_steps - 1 and self.scanning:
-                    self.move_motor('x', stepper.BACKWARD, (x_steps - 1) * 2)
-                    self.move_motor('y', stepper.FORWARD, 2)
+                    # Return to start of X
+                    self.move_motor('x', stepper.BACKWARD, (x_steps - 1) * x_step_size)
+                    # Move one row down in Y
+                    self.move_motor('y', stepper.FORWARD, y_step_size)
 
-            # Scan completion
             if self.scanning:
                 with self.data_lock:
                     self.web_data['status'] = 'scan_complete'
