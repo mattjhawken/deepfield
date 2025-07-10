@@ -3,9 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hydrogen Line Scanner - Web Control</title>
+    <title>Hydrogen Line Scanner Control</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -14,354 +13,315 @@
         }
 
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 50%, #16213e 100%);
-            color: #ffffff;
+            font-family: 'Arial', sans-serif;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            color: white;
             min-height: 100vh;
-            overflow-x: hidden;
+            padding: 20px;
         }
 
         .header {
-            background: rgba(0, 0, 0, 0.3);
-            backdrop-filter: blur(10px);
             text-align: center;
+            margin-bottom: 30px;
             padding: 20px;
-            border-bottom: 2px solid rgba(76, 175, 80, 0.3);
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
         }
 
         .header h1 {
-            background: linear-gradient(45deg, #4CAF50, #81C784);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
             font-size: 2.5em;
             margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
         }
 
-        .dashboard {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 20px;
-            padding: 20px;
-            max-width: 1600px;
-            margin: 0 auto;
-        }
-
-        .card {
-            background: rgba(255, 255, 255, 0.05);
+        .status-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 15px 25px;
+            border-radius: 10px;
+            margin-bottom: 20px;
             backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 15px;
-            padding: 20px;
-            transition: all 0.3s ease;
         }
 
-        .card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 20px 40px rgba(76, 175, 80, 0.2);
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 10px;
         }
 
-        .card h2 {
-            color: #4CAF50;
-            margin-bottom: 15px;
-            font-size: 1.4em;
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #ff4444;
+            animation: pulse 2s infinite;
         }
 
-        /* Control Panel Styles */
-        .control-grid {
+        .status-dot.active {
+            background: #44ff44;
+        }
+
+        .status-dot.calibrated {
+            background: #ffaa44;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+
+        .main-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 15px;
+            gap: 20px;
             margin-bottom: 20px;
         }
 
+        .control-panel {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 25px;
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+        }
+
         .control-section {
-            background: rgba(255, 255, 255, 0.03);
-            padding: 15px;
-            border-radius: 10px;
+            margin-bottom: 25px;
         }
 
         .control-section h3 {
-            color: #81C784;
-            margin-bottom: 10px;
-            font-size: 1.1em;
+            margin-bottom: 15px;
+            color: #ffd700;
+            font-size: 1.3em;
         }
 
-        /* Motor Control */
-        .motor-control {
+        .motor-controls {
             display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            grid-template-rows: 1fr 1fr 1fr;
-            gap: 5px;
-            margin: 10px 0;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            max-width: 200px;
+            margin: 0 auto;
         }
 
         .motor-btn {
-            background: linear-gradient(45deg, #4CAF50, #81C784);
+            background: linear-gradient(145deg, #4a90e2, #357abd);
             border: none;
+            padding: 15px;
+            border-radius: 10px;
             color: white;
-            padding: 12px;
-            border-radius: 8px;
+            font-weight: bold;
             cursor: pointer;
-            font-size: 16px;
             transition: all 0.3s ease;
+            font-size: 16px;
         }
 
         .motor-btn:hover {
-            transform: scale(1.05);
-            box-shadow: 0 5px 15px rgba(76, 175, 80, 0.4);
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
         }
 
         .motor-btn:active {
-            transform: scale(0.95);
+            transform: translateY(0);
         }
 
-        .motor-btn:nth-child(2) { grid-column: 2; grid-row: 1; } /* Up */
-        .motor-btn:nth-child(3) { grid-column: 1; grid-row: 2; } /* Left */
-        .motor-btn:nth-child(4) { grid-column: 3; grid-row: 2; } /* Right */
-        .motor-btn:nth-child(5) { grid-column: 2; grid-row: 3; } /* Down */
+        .motor-btn:disabled {
+            background: #666;
+            cursor: not-allowed;
+            transform: none;
+        }
 
-        /* Input Controls */
+        .control-btn {
+            background: linear-gradient(145deg, #e74c3c, #c0392b);
+            border: none;
+            padding: 12px 25px;
+            border-radius: 8px;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin: 5px;
+            font-size: 14px;
+        }
+
+        .control-btn.success {
+            background: linear-gradient(145deg, #27ae60, #229954);
+        }
+
+        .control-btn.warning {
+            background: linear-gradient(145deg, #f39c12, #e67e22);
+        }
+
+        .control-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+        }
+
+        .control-btn:disabled {
+            background: #666;
+            cursor: not-allowed;
+            transform: none;
+        }
+
         .input-group {
-            margin: 10px 0;
+            margin-bottom: 15px;
         }
 
         .input-group label {
             display: block;
             margin-bottom: 5px;
-            color: #b0b0b0;
-            font-size: 0.9em;
+            font-weight: bold;
         }
 
         .input-group input {
             width: 100%;
-            padding: 8px;
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            border-radius: 5px;
-            background: rgba(255, 255, 255, 0.1);
-            color: white;
-            font-size: 14px;
-        }
-
-        .input-group input:focus {
-            outline: none;
-            border-color: #4CAF50;
-            box-shadow: 0 0 5px rgba(76, 175, 80, 0.3);
-        }
-
-        /* Buttons */
-        .btn {
-            background: linear-gradient(45deg, #4CAF50, #81C784);
+            padding: 10px;
             border: none;
+            border-radius: 5px;
+            background: rgba(255, 255, 255, 0.2);
             color: white;
-            padding: 12px 20px;
-            border-radius: 8px;
-            cursor: pointer;
             font-size: 14px;
-            transition: all 0.3s ease;
-            margin: 5px;
-            width: calc(100% - 10px);
         }
 
-        .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(76, 175, 80, 0.4);
-        }
-
-        .btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            transform: none;
-        }
-
-        .btn-danger {
-            background: linear-gradient(45deg, #f44336, #e57373);
-        }
-
-        .btn-warning {
-            background: linear-gradient(45deg, #ff9800, #ffb74d);
-        }
-
-        /* Status Indicators */
-        .status-indicator {
-            display: inline-block;
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            margin-right: 8px;
-            animation: blink 2s infinite;
-        }
-
-        .status-idle { background: #ff9800; }
-        .status-calibrating { background: #2196f3; }
-        .status-scanning { background: #4caf50; }
-        .status-complete { background: #9c27b0; }
-        .status-error { background: #f44336; }
-
-        @keyframes blink {
-            0%, 50% { opacity: 1; }
-            51%, 100% { opacity: 0.3; }
-        }
-
-        /* Progress Bar */
-        .progress-container {
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 10px;
-            padding: 3px;
-            margin: 15px 0;
+        .input-group input::placeholder {
+            color: rgba(255, 255, 255, 0.7);
         }
 
         .progress-bar {
-            height: 20px;
-            background: linear-gradient(90deg, #4CAF50, #81C784);
-            border-radius: 8px;
-            transition: width 0.5s ease;
-            width: 0%;
+            width: 100%;
+            height: 25px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 12px;
+            overflow: hidden;
+            margin: 10px 0;
         }
 
-        .progress-text {
-            text-align: center;
-            margin-top: 5px;
-            font-size: 0.9em;
-            color: #b0b0b0;
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #27ae60, #2ecc71);
+            transition: width 0.3s ease;
+            border-radius: 12px;
         }
 
-        /* Stats */
+        .data-display {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 25px;
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+        }
+
         .stats-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: repeat(2, 1fr);
             gap: 15px;
+            margin-bottom: 20px;
         }
 
-        .stat-item {
-            background: rgba(255, 255, 255, 0.03);
+        .stat-card {
+            background: rgba(255, 255, 255, 0.1);
             padding: 15px;
             border-radius: 10px;
             text-align: center;
         }
 
         .stat-value {
-            font-size: 2em;
+            font-size: 1.8em;
             font-weight: bold;
-            color: #4CAF50;
-            display: block;
+            color: #ffd700;
         }
 
         .stat-label {
             font-size: 0.9em;
-            color: #b0b0b0;
+            opacity: 0.8;
+            margin-top: 5px;
         }
 
-        /* Position Display */
-        .position-display {
-            font-size: 1.5em;
-            text-align: center;
-            margin: 10px 0;
-            color: #4CAF50;
-        }
-
-        /* Plots */
-        .plot-container {
-            grid-column: span 2;
-            background: rgba(255, 255, 255, 0.02);
-            border-radius: 15px;
-            padding: 20px;
-        }
-
-        .plot-grid {
+        .plots-container {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
             gap: 20px;
+            margin-top: 20px;
+        }
+
+        .plot-card {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 20px;
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+        }
+
+        .plot-card h3 {
+            color: #ffd700;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+
+        .plot-card img {
+            width: 100%;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+        }
+
+        .measurement-card {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 20px;
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
             margin-bottom: 20px;
         }
 
-        .plot-item {
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 10px;
-            padding: 15px;
-            text-align: center;
-        }
-
-        .plot-item h3 {
-            color: #4CAF50;
+        .measurement-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
             margin-bottom: 10px;
-            font-size: 1.2em;
         }
 
-        .plot-item img {
-            max-width: 100%;
-            height: auto;
-            border-radius: 8px;
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
-        }
-
-        /* Current Measurement Display */
-        .current-measurement {
-            background: rgba(255, 255, 255, 0.08);
-            border-left: 4px solid #4CAF50;
+        .alert {
             padding: 15px;
-            margin: 15px 0;
+            margin: 10px 0;
             border-radius: 8px;
-        }
-
-        .measurement-value {
-            font-size: 1.8em;
             font-weight: bold;
-            color: #4CAF50;
-            margin-bottom: 5px;
         }
 
-        .measurement-coords {
-            font-size: 0.9em;
-            color: #b0b0b0;
+        .alert.error {
+            background: rgba(231, 76, 60, 0.8);
+            border-left: 4px solid #e74c3c;
         }
 
-        /* Charts */
-        .chart-container {
-            position: relative;
-            height: 300px;
-            margin: 15px 0;
+        .alert.success {
+            background: rgba(39, 174, 96, 0.8);
+            border-left: 4px solid #27ae60;
         }
 
-        /* Connection Status */
+        .alert.warning {
+            background: rgba(243, 156, 18, 0.8);
+            border-left: 4px solid #f39c12;
+        }
+
         .connection-status {
             position: fixed;
             top: 20px;
             right: 20px;
-            padding: 10px 15px;
-            border-radius: 20px;
-            font-size: 0.9em;
+            padding: 10px 20px;
+            border-radius: 25px;
+            font-weight: bold;
+            font-size: 12px;
             z-index: 1000;
         }
 
-        .connection-connected {
-            background: rgba(76, 175, 80, 0.2);
-            color: #4CAF50;
-            border: 1px solid #4CAF50;
+        .connection-status.connected {
+            background: rgba(39, 174, 96, 0.9);
         }
 
-        .connection-disconnected {
-            background: rgba(244, 67, 54, 0.2);
-            color: #f44336;
-            border: 1px solid #f44336;
-        }
-
-        /* Responsive Design */
-        @media (max-width: 1200px) {
-            .dashboard {
-                grid-template-columns: 1fr 1fr;
-            }
-
-            .plot-container {
-                grid-column: span 1;
-            }
+        .connection-status.disconnected {
+            background: rgba(231, 76, 60, 0.9);
         }
 
         @media (max-width: 768px) {
-            .dashboard {
-                grid-template-columns: 1fr;
-            }
-
-            .control-grid {
+            .main-grid {
                 grid-template-columns: 1fr;
             }
 
@@ -369,478 +329,443 @@
                 grid-template-columns: 1fr;
             }
 
-            .plot-grid {
+            .plots-container {
                 grid-template-columns: 1fr;
             }
-        }
-
-        /* Notification System */
-        .notification {
-            position: fixed;
-            top: 80px;
-            right: 20px;
-            padding: 15px 20px;
-            border-radius: 8px;
-            color: white;
-            font-size: 0.9em;
-            z-index: 1000;
-            opacity: 0;
-            transform: translateX(100%);
-            transition: all 0.3s ease;
-        }
-
-        .notification.show {
-            opacity: 1;
-            transform: translateX(0);
-        }
-
-        .notification.success {
-            background: linear-gradient(45deg, #4CAF50, #81C784);
-        }
-
-        .notification.error {
-            background: linear-gradient(45deg, #f44336, #e57373);
-        }
-
-        .notification.warning {
-            background: linear-gradient(45deg, #ff9800, #ffb74d);
         }
     </style>
 </head>
 <body>
-    <div class="connection-status" id="connectionStatus">
-        <span id="connectionText">Connecting...</span>
-    </div>
-
-    <div class="notification" id="notification"></div>
+    <div class="connection-status" id="connectionStatus">Disconnected</div>
 
     <div class="header">
-        <h1>21cm Hydrogen Line Scanner</h1>
-        <p>Real-time radio astronomy data acquisition and analysis</p>
+        <h1>🔭 Hydrogen Line Scanner</h1>
+        <p>Real-time Radio Telescope Control Dashboard</p>
     </div>
 
-    <div class="dashboard">
-        <!-- Motor Control Card -->
-        <div class="card">
-            <h2>Motor Control</h2>
-            <div class="control-section">
-                <h3>Manual Positioning</h3>
-                <div class="motor-control">
-                    <button class="motor-btn" data-direction="up">⬆</button>
-                    <button class="motor-btn" data-direction="left">⬅</button>
-                    <button class="motor-btn" data-direction="right">➡</button>
-                    <button class="motor-btn" data-direction="down">⬇</button>
-                </div>
-
-                <div class="input-group">
-                    <label>Steps per move:</label>
-                    <input type="number" id="motorSteps" value="1" min="1" max="20">
-                </div>
-
-                <button class="btn" id="resetPositionBtn">Reset Position</button>
-            </div>
-
-            <div class="position-display">
-                Position: <span id="positionX">0</span>, <span id="positionY">0</span>
-            </div>
+    <div class="status-bar">
+        <div class="status-indicator">
+            <div class="status-dot" id="statusDot"></div>
+            <span id="statusText">Idle</span>
         </div>
-
-        <!-- System Status Card -->
-        <div class="card">
-            <h2>System Status</h2>
-            <div class="current-measurement">
-                <div class="measurement-value" id="currentPower">0.0 dB</div>
-                <div class="measurement-coords" id="currentCoords">Position: (0, 0)</div>
-            </div>
-
-            <div class="control-section">
-                <div style="margin-bottom: 15px;">
-                    <span class="status-indicator" id="statusIndicator"></span>
-                    <span id="statusText">Idle</span>
-                </div>
-
-                <div class="progress-container">
-                    <div class="progress-bar" id="progressBar"></div>
-                </div>
-                <div class="progress-text" id="progressText">0%</div>
-            </div>
-
-            <button class="btn" id="quickMeasureBtn">Quick Measurement</button>
+        <div class="status-indicator">
+            <div class="status-dot" id="calibrationDot"></div>
+            <span id="calibrationText">Not Calibrated</span>
         </div>
+        <div>Position: (<span id="positionX">0</span>, <span id="positionY">0</span>)</div>
+    </div>
 
-        <!-- Calibration Control Card -->
-        <div class="card">
-            <h2>Baseline Calibration</h2>
+    <div class="progress-bar" id="progressContainer" style="display: none;">
+        <div class="progress-fill" id="progressFill"></div>
+    </div>
+
+    <div class="main-grid">
+        <div class="control-panel">
             <div class="control-section">
+                <h3>🎮 Motor Controls</h3>
+                <div class="motor-controls">
+                    <div></div>
+                    <button class="motor-btn" id="upBtn" onclick="moveMotor('up')">↑</button>
+                    <div></div>
+                    <button class="motor-btn" id="leftBtn" onclick="moveMotor('left')">←</button>
+                    <button class="motor-btn" id="resetBtn" onclick="resetPosition()">⌂</button>
+                    <button class="motor-btn" id="rightBtn" onclick="moveMotor('right')">→</button>
+                    <div></div>
+                    <button class="motor-btn" id="downBtn" onclick="moveMotor('down')">↓</button>
+                    <div></div>
+                </div>
+                <div style="text-align: center; margin-top: 15px;">
+                    <button class="control-btn success" onclick="quickMeasurement()">📡 Quick Measure</button>
+                </div>
+            </div>
+
+            <div class="control-section">
+                <h3>🔧 Calibration</h3>
                 <div class="input-group">
-                    <label>Number of samples:</label>
+                    <label>Samples:</label>
                     <input type="number" id="calibrationSamples" value="30" min="10" max="100">
                 </div>
-
                 <div class="input-group">
-                    <label>Measurement time (s):</label>
-                    <input type="number" id="calibrationTime" value="1.0" min="0.1" max="10.0" step="0.1">
+                    <label>Measurement Time (s):</label>
+                    <input type="number" id="calibrationTime" value="1.0" min="0.5" max="10" step="0.1">
                 </div>
-
-                <button class="btn" id="startCalibrationBtn">Start Calibration</button>
-                <button class="btn btn-danger" id="stopCalibrationBtn" disabled>Stop Calibration</button>
+                <button class="control-btn warning" id="calibrateBtn" onclick="startCalibration()">🎯 Calibrate</button>
+                <button class="control-btn" id="stopCalibrationBtn" onclick="stopCalibration()" disabled>⏹️ Stop</button>
             </div>
 
-            <div class="current-measurement">
-                <div class="measurement-value" id="baselineLevel">Not calibrated</div>
-                <div class="measurement-coords">Baseline ± StdDev</div>
-            </div>
-        </div>
-
-        <!-- Scan Control Card -->
-        <div class="card">
-            <h2>Sky Scan</h2>
             <div class="control-section">
+                <h3>🌌 Sky Scan</h3>
                 <div class="input-group">
-                    <label>X Steps (Azimuth):</label>
+                    <label>X Steps:</label>
                     <input type="number" id="scanXSteps" value="15" min="5" max="50">
                 </div>
-
                 <div class="input-group">
-                    <label>Y Steps (Elevation):</label>
+                    <label>Y Steps:</label>
                     <input type="number" id="scanYSteps" value="15" min="5" max="50">
                 </div>
-
                 <div class="input-group">
-                    <label>Measurement time (s):</label>
-                    <input type="number" id="scanTime" value="1.0" min="0.1" max="10.0" step="0.1">
+                    <label>Measurement Time (s):</label>
+                    <input type="number" id="scanTime" value="1.0" min="0.5" max="10" step="0.1">
                 </div>
-
-                <button class="btn" id="startScanBtn">Start Scan</button>
-                <button class="btn btn-danger" id="stopScanBtn" disabled>Stop Scan</button>
+                <button class="control-btn success" id="scanBtn" onclick="startScan()">🚀 Start Scan</button>
+                <button class="control-btn" id="stopScanBtn" onclick="stopScan()" disabled>⏹️ Stop</button>
             </div>
         </div>
 
-        <!-- Statistics Card -->
-        <div class="card">
-            <h2>Detection Statistics</h2>
+        <div class="data-display">
+            <h3>📊 Real-time Data</h3>
+
+            <div class="measurement-card">
+                <h4>Current Measurement</h4>
+                <div class="measurement-row">
+                    <span>Position:</span>
+                    <span>(<span id="currentX">0</span>, <span id="currentY">0</span>)</span>
+                </div>
+                <div class="measurement-row">
+                    <span>Power:</span>
+                    <span id="currentPower">0.00 dB</span>
+                </div>
+            </div>
+
             <div class="stats-grid">
-                <div class="stat-item">
-                    <span class="stat-value" id="detections3Sigma">0</span>
-                    <span class="stat-label">3σ Detections</span>
+                <div class="stat-card">
+                    <div class="stat-value" id="baselineLevel">0.00</div>
+                    <div class="stat-label">Baseline (dB)</div>
                 </div>
-                <div class="stat-item">
-                    <span class="stat-value" id="detections5Sigma">0</span>
-                    <span class="stat-label">5σ Detections</span>
+                <div class="stat-card">
+                    <div class="stat-value" id="baselineStd">0.00</div>
+                    <div class="stat-label">Std Dev (dB)</div>
                 </div>
-                <div class="stat-item">
-                    <span class="stat-value" id="maxSignal">0.0</span>
-                    <span class="stat-label">Max Signal (dB)</span>
+                <div class="stat-card">
+                    <div class="stat-value" id="maxSignal">0.00</div>
+                    <div class="stat-label">Max Signal (dB)</div>
                 </div>
-                <div class="stat-item">
-                    <span class="stat-value" id="totalPoints">0</span>
-                    <span class="stat-label">Total Points</span>
+                <div class="stat-card">
+                    <div class="stat-value" id="totalPoints">0</div>
+                    <div class="stat-label">Total Points</div>
                 </div>
-            </div>
-        </div>
-
-        <!-- Live Data Chart -->
-        <div class="card">
-            <h2>Live Data Stream</h2>
-            <div class="chart-container">
-                <canvas id="liveChart"></canvas>
-            </div>
-        </div>
-
-        <!-- Plots Container -->
-        <div class="plot-container">
-            <h2>Data Visualization</h2>
-            <div class="plot-grid">
-                <div class="plot-item">
-                    <h3>Sky Map</h3>
-                    <img id="skymapPlot" src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjMzMzIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZpbGw9IiM2NjYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGR5PSIuM2VtIj5ObyBkYXRhIHlldDwvdGV4dD48L3N2Zz4=" alt="Sky Map">
+                <div class="stat-card">
+                    <div class="stat-value" id="detections3">0</div>
+                    <div class="stat-label">3σ Detections</div>
                 </div>
-                <div class="plot-item">
-                    <h3>Signal Distribution</h3>
-                    <img id="distributionPlot" src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjMzMzIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZpbGw9IiM2NjYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGR5PSIuM2VtIj5ObyBkYXRhIHlldDwvdGV4dD48L3N2Zz4=" alt="Signal Distribution">
+                <div class="stat-card">
+                    <div class="stat-value" id="detections5">0</div>
+                    <div class="stat-label">5σ Detections</div>
                 </div>
             </div>
         </div>
     </div>
 
-    <script>
-        // Global variables
-        let socket;
-        let liveChart;
-        let liveData = [];
-        let maxDataPoints = 50;
-        let currentData = {
-            status: 'idle',
-            progress: 0,
-            position: { x: 0, y: 0 },
-            current_measurement: { x: 0, y: 0, power: 0 },
-            stats: {
-                baseline_level: 0,
-                baseline_std: 0,
-                detections_3sigma: 0,
-                detections_5sigma: 0,
-                max_signal: 0,
-                total_points: 0
-            },
-            baseline_calibrated: false,
-            plots: {}
-        };
+    <div class="plots-container">
+        <div class="plot-card" id="skymapCard" style="display: none;">
+            <h3>🌌 Sky Map</h3>
+            <img id="skymapPlot" src="" alt="Sky map loading...">
+        </div>
 
-        // Initialize when page loads
-        document.addEventListener('DOMContentLoaded', function() {
-            initializeSocket();
-            initializeLiveChart();
-            setupEventListeners();
-            setupKeyboardControls();
+        <div class="plot-card" id="recentCard" style="display: none;">
+            <h3>📈 Recent Measurements</h3>
+            <img id="recentPlot" src="" alt="Recent data loading...">
+        </div>
+
+        <div class="plot-card" id="distributionCard" style="display: none;">
+            <h3>📊 Signal Distribution</h3>
+            <img id="distributionPlot" src="" alt="Distribution loading...">
+        </div>
+    </div>
+
+    <div id="alertContainer"></div>
+
+    <script>
+        // Socket.IO connection
+        const socket = io();
+
+        // UI State
+        let isConnected = false;
+        let currentData = {};
+
+        // Connection events
+        socket.on('connect', () => {
+            isConnected = true;
+            updateConnectionStatus();
+            showAlert('Connected to telescope!', 'success');
         });
 
-        function initializeSocket() {
-            socket = io();
+        socket.on('disconnect', () => {
+            isConnected = false;
+            updateConnectionStatus();
+            showAlert('Disconnected from telescope', 'error');
+        });
 
-            socket.on('connect', function() {
-                updateConnectionStatus(true);
-                showNotification('Connected to scanner', 'success');
-            });
+        // Data updates
+        socket.on('data_update', (data) => {
+            currentData = data;
+            updateUI(data);
+        });
 
-            socket.on('disconnect', function() {
-                updateConnectionStatus(false);
-                showNotification('Disconnected from scanner', 'error');
-            });
+        // Error handling
+        socket.on('error', (error) => {
+            showAlert(error.message, 'error');
+        });
 
-            socket.on('data_update', function(data) {
-                currentData = data;
-                updateDashboard(data);
-            });
+        // Motor control functions
+        function moveMotor(direction) {
+            if (!isConnected) {
+                showAlert('Not connected to telescope', 'error');
+                return;
+            }
 
-            socket.on('error', function(error) {
-                showNotification(error.message, 'error');
-            });
-        }
-
-        function initializeLiveChart() {
-            const ctx = document.getElementById('liveChart').getContext('2d');
-            liveChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: [],
-                    datasets: [{
-                        label: 'Signal Power (dB)',
-                        data: [],
-                        borderColor: '#4CAF50',
-                        backgroundColor: 'rgba(76, 175, 80, 0.1)',
-                        borderWidth: 2,
-                        fill: true,
-                        tension: 0.4
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    scales: {
-                        y: {
-                            beginAtZero: false,
-                            grid: {
-                                color: 'rgba(255, 255, 255, 0.1)'
-                            },
-                            ticks: {
-                                color: '#b0b0b0'
-                            }
-                        },
-                        x: {
-                            grid: {
-                                color: 'rgba(255, 255, 255, 0.1)'
-                            },
-                            ticks: {
-                                color: '#b0b0b0'
-                            }
-                        }
-                    },
-                    plugins: {
-                        legend: {
-                            labels: {
-                                color: '#b0b0b0'
-                            }
-                        }
-                    }
-                }
-            });
-        }
-
-        function setupEventListeners() {
-            // Motor control buttons
-            document.querySelectorAll('.motor-btn').forEach(btn => {
-                btn.addEventListener('click', function() {
-                    const direction = this.dataset.direction;
-                    const steps = parseInt(document.getElementById('motorSteps').value);
-                    moveMotor(direction, steps);
-                });
-            });
-
-            // Reset position button
-            document.getElementById('resetPositionBtn').addEventListener('click', function() {
-                socket.emit('reset_position');
-            });
-
-            // Quick measurement button
-            document.getElementById('quickMeasureBtn').addEventListener('click', function() {
-                socket.emit('quick_measurement');
-            });
-
-            // Calibration buttons
-            document.getElementById('startCalibrationBtn').addEventListener('click', function() {
-                const samples = parseInt(document.getElementById('calibrationSamples').value);
-                const time = parseFloat(document.getElementById('calibrationTime').value);
-
-                socket.emit('start_calibration', {
-                    samples: samples,
-                    measurement_time: time
-                });
-
-                this.disabled = true;
-                document.getElementById('stopCalibrationBtn').disabled = false;
-            });
-
-            document.getElementById('stopCalibrationBtn').addEventListener('click', function() {
-                socket.emit('stop_calibration');
-                this.disabled = true;
-                document.getElementById('startCalibrationBtn').disabled = false;
-            });
-
-            // Scan buttons
-            document.getElementById('startScanBtn').addEventListener('click', function() {
-                const xSteps = parseInt(document.getElementById('scanXSteps').value);
-                const ySteps = parseInt(document.getElementById('scanYSteps').value);
-                const time = parseFloat(document.getElementById('scanTime').value);
-
-                socket.emit('start_scan', {
-                    x_steps: xSteps,
-                    y_steps: ySteps,
-                    measurement_time: time
-                });
-
-                this.disabled = true;
-                document.getElementById('stopScanBtn').disabled = false;
-            });
-
-            document.getElementById('stopScanBtn').addEventListener('click', function() {
-                socket.emit('stop_scan');
-                this.disabled = true;
-                document.getElementById('startScanBtn').disabled = false;
-            });
-        }
-
-        function setupKeyboardControls() {
-            document.addEventListener('keydown', function(event) {
-                // Only handle arrow keys when not in input fields
-                if (event.target.tagName === 'INPUT') return;
-
-                const steps = parseInt(document.getElementById('motorSteps').value);
-
-                switch(event.key) {
-                    case 'ArrowUp':
-                        event.preventDefault();
-                        moveMotor('up', steps);
-                        break;
-                    case 'ArrowDown':
-                        event.preventDefault();
-                        moveMotor('down', steps);
-                        break;
-                    case 'ArrowLeft':
-                        event.preventDefault();
-                        moveMotor('left', steps);
-                        break;
-                    case 'ArrowRight':
-                        event.preventDefault();
-                        moveMotor('right', steps);
-                        break;
-                    case ' ':
-                        event.preventDefault();
-                        socket.emit('quick_measurement');
-                        break;
-                }
-            });
-        }
-
-        function moveMotor(direction, steps) {
+            const steps = 1; // Can be made configurable
             socket.emit('move_motor', {
                 direction: direction,
                 steps: steps
             });
         }
 
-        function updateDashboard(data) {
-            // Update position display
-            document.getElementById('positionX').textContent = data.position.x;
-            document.getElementById('positionY').textContent = data.position.y;
-
-            // Update current measurement
-            document.getElementById('currentPower').textContent = data.current_measurement.power.toFixed(2) + ' dB';
-            document.getElementById('currentCoords').textContent =
-                `Position: (${data.current_measurement.x}, ${data.current_measurement.y})`;
-
-            // Update status
-            updateStatus(data.status);
-
-            // Update progress
-            document.getElementById('progressBar').style.width = data.progress + '%';
-            document.getElementById('progressText').textContent = data.progress.toFixed(1) + '%';
-
-            // Update statistics
-            document.getElementById('detections3Sigma').textContent = data.stats.detections_3sigma;
-            document.getElementById('detections5Sigma').textContent = data.stats.detections_5sigma;
-            document.getElementById('maxSignal').textContent = data.stats.max_signal.toFixed(2);
-            document.getElementById('totalPoints').textContent = data.stats.total_points;
-
-            // Update baseline display
-            if (data.baseline_calibrated) {
-                document.getElementById('baselineLevel').textContent =
-                    `${data.stats.baseline_level.toFixed(2)} ± ${data.stats.baseline_std.toFixed(2)} dB`;
-            } else {
-                document.getElementById('baselineLevel').textContent = 'Not calibrated';
+        function resetPosition() {
+            if (!isConnected) {
+                showAlert('Not connected to telescope', 'error');
+                return;
             }
 
-            // Update live chart
-            updateLiveChart(data.current_measurement.power);
+            socket.emit('reset_position');
+            showAlert('Position reset to origin', 'success');
+        }
+
+        // Calibration functions
+        function startCalibration() {
+            if (!isConnected) {
+                showAlert('Not connected to telescope', 'error');
+                return;
+            }
+
+            const samples = parseInt(document.getElementById('calibrationSamples').value);
+            const measurementTime = parseFloat(document.getElementById('calibrationTime').value);
+
+            socket.emit('start_calibration', {
+                samples: samples,
+                measurement_time: measurementTime
+            });
+
+            updateCalibrationButtons(true);
+            showAlert('Calibration started...', 'warning');
+        }
+
+        function stopCalibration() {
+            socket.emit('stop_calibration');
+            updateCalibrationButtons(false);
+            showAlert('Calibration stopped', 'warning');
+        }
+
+        // Scan functions
+        function startScan() {
+            if (!isConnected) {
+                showAlert('Not connected to telescope', 'error');
+                return;
+            }
+
+            const xSteps = parseInt(document.getElementById('scanXSteps').value);
+            const ySteps = parseInt(document.getElementById('scanYSteps').value);
+            const measurementTime = parseFloat(document.getElementById('scanTime').value);
+
+            socket.emit('start_scan', {
+                x_steps: xSteps,
+                y_steps: ySteps,
+                measurement_time: measurementTime
+            });
+
+            updateScanButtons(true);
+            showAlert('Sky scan started...', 'success');
+        }
+
+        function stopScan() {
+            socket.emit('stop_scan');
+            updateScanButtons(false);
+            showAlert('Scan stopped', 'warning');
+        }
+
+        // Quick measurement
+        function quickMeasurement() {
+            if (!isConnected) {
+                showAlert('Not connected to telescope', 'error');
+                return;
+            }
+
+            socket.emit('quick_measurement');
+            showAlert('Taking quick measurement...', 'warning');
+        }
+
+        // UI update functions
+        function updateConnectionStatus() {
+            const statusEl = document.getElementById('connectionStatus');
+            if (isConnected) {
+                statusEl.textContent = 'Connected';
+                statusEl.className = 'connection-status connected';
+            } else {
+                statusEl.textContent = 'Disconnected';
+                statusEl.className = 'connection-status disconnected';
+            }
+        }
+
+        function updateUI(data) {
+            // Update status
+            const statusDot = document.getElementById('statusDot');
+            const statusText = document.getElementById('statusText');
+            const calibrationDot = document.getElementById('calibrationDot');
+            const calibrationText = document.getElementById('calibrationText');
+
+            statusText.textContent = data.status || 'idle';
+
+            // Update status indicators
+            if (data.status === 'scanning' || data.status === 'calibrating') {
+                statusDot.className = 'status-dot active';
+            } else {
+                statusDot.className = 'status-dot';
+            }
+
+            if (data.baseline_calibrated) {
+                calibrationDot.className = 'status-dot calibrated';
+                calibrationText.textContent = 'Calibrated';
+            } else {
+                calibrationDot.className = 'status-dot';
+                calibrationText.textContent = 'Not Calibrated';
+            }
+
+            // Update position
+            document.getElementById('positionX').textContent = data.position?.x || 0;
+            document.getElementById('positionY').textContent = data.position?.y || 0;
+
+            // Update current measurement
+            if (data.current_measurement) {
+                document.getElementById('currentX').textContent = data.current_measurement.x || 0;
+                document.getElementById('currentY').textContent = data.current_measurement.y || 0;
+                document.getElementById('currentPower').textContent = (data.current_measurement.power || 0).toFixed(2) + ' dB';
+            }
+
+            // Update statistics
+            if (data.stats) {
+                document.getElementById('baselineLevel').textContent = (data.stats.baseline_level || 0).toFixed(2);
+                document.getElementById('baselineStd').textContent = (data.stats.baseline_std || 0).toFixed(2);
+                document.getElementById('maxSignal').textContent = (data.stats.max_signal || 0).toFixed(2);
+                document.getElementById('totalPoints').textContent = data.stats.total_points || 0;
+                document.getElementById('detections3').textContent = data.stats.detections_3sigma || 0;
+                document.getElementById('detections5').textContent = data.stats.detections_5sigma || 0;
+            }
+
+            // Update progress
+            const progressContainer = document.getElementById('progressContainer');
+            const progressFill = document.getElementById('progressFill');
+
+            if (data.status === 'scanning' || data.status === 'calibrating') {
+                progressContainer.style.display = 'block';
+                progressFill.style.width = (data.progress || 0) + '%';
+            } else {
+                progressContainer.style.display = 'none';
+            }
 
             // Update plots
-            updatePlots(data.plots);
+            if (data.plots) {
+                updatePlots(data.plots);
+            }
 
             // Update button states
             updateButtonStates(data.status);
         }
 
-        function updateStatus(status) {
-            const statusIndicator = document.getElementById('statusIndicator');
-            const statusText = document.getElementById('statusText');
+        function updatePlots(plots) {
+            if (plots.skymap) {
+                document.getElementById('skymapPlot').src = plots.skymap;
+                document.getElementById('skymapCard').style.display = 'block';
+            }
 
-            // Remove all status classes
-            statusIndicator.className = 'status-indicator';
+            if (plots.recent) {
+                document.getElementById('recentPlot').src = plots.recent;
+                document.getElementById('recentCard').style.display = 'block';
+            }
 
-            switch(status) {
-                case 'idle':
-                    statusIndicator.classList.add('status-idle');
-                    statusText.textContent = 'Idle';
+            if (plots.distribution) {
+                document.getElementById('distributionPlot').src = plots.distribution;
+                document.getElementById('distributionCard').style.display = 'block';
+            }
+        }
+
+        function updateButtonStates(status) {
+            const isScanning = status === 'scanning';
+            const isCalibrating = status === 'calibrating';
+            const isBusy = isScanning || isCalibrating;
+
+            // Motor buttons
+            const motorButtons = document.querySelectorAll('.motor-btn');
+            motorButtons.forEach(btn => {
+                btn.disabled = isBusy;
+            });
+
+            // Calibration buttons
+            updateCalibrationButtons(isCalibrating);
+
+            // Scan buttons
+            updateScanButtons(isScanning);
+        }
+
+        function updateCalibrationButtons(isCalibrating) {
+            document.getElementById('calibrateBtn').disabled = isCalibrating;
+            document.getElementById('stopCalibrationBtn').disabled = !isCalibrating;
+        }
+
+        function updateScanButtons(isScanning) {
+            document.getElementById('scanBtn').disabled = isScanning;
+            document.getElementById('stopScanBtn').disabled = !isScanning;
+        }
+
+        function showAlert(message, type) {
+            const alertContainer = document.getElementById('alertContainer');
+            const alert = document.createElement('div');
+            alert.className = `alert ${type}`;
+            alert.textContent = message;
+
+            alertContainer.appendChild(alert);
+
+            // Remove alert after 5 seconds
+            setTimeout(() => {
+                if (alert.parentNode) {
+                    alert.parentNode.removeChild(alert);
+                }
+            }, 5000);
+        }
+
+        // Initialize
+        updateConnectionStatus();
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (e.target.tagName === 'INPUT') return;
+
+            switch(e.key) {
+                case 'ArrowUp':
+                    e.preventDefault();
+                    moveMotor('up');
                     break;
-                case 'calibrating':
-                    statusIndicator.classList.add('status-calibrating');
-                    statusText.textContent = 'Calibrating...';
+                case 'ArrowDown':
+                    e.preventDefault();
+                    moveMotor('down');
                     break;
-                case 'scanning':
-                    statusIndicator.classList.add('status-scanning');
-                    statusText.textContent = 'Scanning...';
+                case 'ArrowLeft':
+                    e.preventDefault();
+                    moveMotor('left');
                     break;
-                case 'calibration_complete':
-                    statusIndicator.classList.add('status-complete');
-                    statusText.textContent = 'Calibration Complete';
+                case 'ArrowRight':
+                    e.preventDefault();
+                    moveMotor('right');
                     break;
-                case 'scan_complete':
-                    statusIndicator.classList.add('status-complete');
-                    statusText.textContent = 'Scan Complete';
+                case ' ':
+                    e.preventDefault();
+                    quickMeasurement();
                     break;
-                case 'calibration_stopped':
-                    statusIndicator.classList.add('status-warning');
-                    statusText.textContent = 'Calibration Stopped';
+                case 'r':
+                    e.preventDefault();
+                    resetPosition();
                     break;
-                case 'scan_stopped':
-                    statusIndicator.classList.add('status-warning');
-                    statusText.textContent
+            }
+        });
+    </script>
+</body>
+</html>
