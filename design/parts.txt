@@ -1,4 +1,0 @@
-Neo 6M GPS Module + Antenna: https://www.amazon.ca/Robojax-U-blox-NEO-6M-Module-Antenna/dp/B073MFYL8B
-AdaFruit DRV8833: https://www.adafruit.com/product/3297
-RaspberryPi 4/5
-NEMA17 Stepper Motor (2x)

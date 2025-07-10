@@ -1,16 +1,24 @@
 """
-Hydrogen line manual testing and background scanning
+Hydrogen line manual testing and background scanning with web dashboard for remote access
 """
 import curses
 import time
 import board
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+import io
+import base64
 from datetime import datetime
 from adafruit_motorkit import MotorKit
 from adafruit_motor import stepper
+import threading
+from collections import deque
+from flask import Flask, render_template, jsonify
+import json
 
-# Try to import RTL-SDR - if not available, use simulation
+# Try to import RTL-SDR
 try:
     from rtlsdr import RtlSdr
     RTL_SDR_AVAILABLE = True
@@ -18,486 +26,411 @@ except ImportError:
     RTL_SDR_AVAILABLE = False
     print("RTL-SDR not available, using simulation mode")
 
-kit = MotorKit(i2c=board.I2C())
 
-FORWARD = stepper.FORWARD
-BACKWARD = stepper.BACKWARD
+class HydrogenScanner:
+    def __init__(self):
+        self.kit = MotorKit(i2c=board.I2C())
 
-# Global variables for data storage
-baseline_data = []
-scan_data = []
-baseline_level = 0.0
-baseline_std = 0.0
+        # Configuration
+        self.config = {
+            'center_freq': 1.42040575e9,
+            'sample_rate': 2.048e6,
+            'gain': 'auto',
+            'samples_per_measurement': 256*1024
+        }
 
-# SDR Configuration
-SDR_CONFIG = {
-    'sample_rate': 2.048e6,
-    'center_freq': 1.42040575e9,  # Hydrogen line frequency
-    'gain': 'auto',
-    'samples_per_measurement': 256*1024
-}
+        # Data storage
+        self.baseline_level = 0.0
+        self.baseline_std = 0.0
+        self.scan_data = []
+        self.sky_map = None
+        self.live_data = deque(maxlen=100)
 
-def measure_power_rtlsdr(measurement_time=1.0):
-    """
-    Measure power using RTL-SDR over a specified time window
+        # Web dashboard data
+        self.web_data = {
+            'status': 'idle',
+            'progress': 0,
+            'current_measurement': {'x': 0, 'y': 0, 'power': 0},
+            'stats': {},
+            'plots': {}
+        }
+        self.data_lock = threading.Lock()
 
-    Args:
-        measurement_time: Time in seconds to collect samples
-    """
-    if not RTL_SDR_AVAILABLE:
-        # Simulate realistic measurements with more samples = better SNR
-        num_sim_samples = int(measurement_time * 1000)  # Simulate 1000 samples per second
-        samples = np.random.normal(-45, 2, num_sim_samples)  # Base noise level
+        # Flask app
+        self.app = Flask(__name__)
+        self.setup_web_routes()
 
-        # Add occasional hydrogen line signals
-        if np.random.random() < 0.1:  # 10% chance of detecting signal
-            signal_strength = np.random.normal(3, 0.5)  # 3dB above noise
-            samples += signal_strength * 0.1  # Add weak signal
+    def setup_web_routes(self):
+        """Setup Flask routes for web dashboard"""
+        @self.app.route('/')
+        def dashboard():
+            return render_template('dashboard.html')
 
-        # Better SNR with more samples
-        power = np.mean(samples) - np.std(samples) / np.sqrt(len(samples))
-        return power
+        @self.app.route('/api/data')
+        def get_data():
+            with self.data_lock:
+                return jsonify(self.web_data)
 
-    try:
-        sdr = RtlSdr()
-        sdr.sample_rate = SDR_CONFIG['sample_rate']
-        sdr.center_freq = SDR_CONFIG['center_freq']
-        sdr.gain = SDR_CONFIG['gain']
+        @self.app.route('/api/control/<action>')
+        def control(action):
+            # Add control endpoints if needed
+            return jsonify({'status': 'ok', 'action': action})
 
-        # Calculate how many samples to collect
-        total_samples = int(measurement_time * sdr.sample_rate)
-        samples_per_read = SDR_CONFIG['samples_per_measurement']
+    def measure_power(self, measurement_time=1.0):
+        """Measure power with RTL-SDR or simulation"""
+        if not RTL_SDR_AVAILABLE:
+            # Realistic simulation
+            samples = np.random.normal(-45, 2, int(measurement_time * 1000))
+            if np.random.random() < 0.15:  # 15% chance of H-line detection
+                samples += np.random.normal(2, 0.3)
+            return np.mean(samples)
 
-        all_samples = []
-        samples_collected = 0
+        try:
+            sdr = RtlSdr()
+            sdr.sample_rate = self.config['sample_rate']
+            sdr.center_freq = self.config['center_freq']
+            sdr.gain = self.config['gain']
 
-        while samples_collected < total_samples:
-            # Read samples in chunks
-            chunk_size = min(samples_per_read, total_samples - samples_collected)
-            chunk = sdr.read_samples(chunk_size)
-            all_samples.extend(chunk)
-            samples_collected += len(chunk)
+            total_samples = int(measurement_time * sdr.sample_rate)
+            chunk_size = self.config['samples_per_measurement']
 
-        # Calculate power in dB from all collected samples
-        power = 10 * np.log10(np.mean(np.abs(all_samples)**2))
+            power_sum = 0
+            samples_collected = 0
 
-        sdr.close()
-        return power
+            while samples_collected < total_samples:
+                chunk = sdr.read_samples(min(chunk_size, total_samples - samples_collected))
+                power_sum += np.sum(np.abs(chunk)**2)
+                samples_collected += len(chunk)
 
-    except Exception as e:
-        print(f"SDR measurement error: {e}")
-        # Fallback to simulation
-        num_sim_samples = int(measurement_time * 1000)
-        samples = np.random.normal(-45, 2, num_sim_samples)
-        return np.mean(samples) - np.std(samples) / np.sqrt(len(samples))
+            power_db = 10 * np.log10(power_sum / samples_collected)
+            sdr.close()
+            return power_db
 
+        except Exception as e:
+            print(f"SDR error: {e}")
+            return np.random.normal(-45, 2)
 
-def move_x(direction):
-    kit.stepper1.onestep(direction=direction)
-    time.sleep(0.01)
+    def move_motor(self, axis, direction, steps=1):
+        """Move motor with simplified interface"""
+        motor = self.kit.stepper1 if axis == 'x' else self.kit.stepper2
+        for _ in range(steps):
+            motor.onestep(direction=direction, style=stepper.INTERLEAVE)
 
+    def manual_position(self):
+        """Manual positioning with curses interface"""
+        def _position(stdscr):
+            stdscr.nodelay(True)
+            stdscr.clear()
+            stdscr.addstr("Arrow keys to move, 'q' to quit, 'f' for fast mode\n")
+            stdscr.addstr("Current mode: NORMAL\n")
+            stdscr.addstr("Web dashboard: http://localhost:5000\n")
+            stdscr.refresh()
 
-def move_y(direction):
-    kit.stepper2.onestep(direction=direction)
-    time.sleep(0.05)
+            fast_mode = False
+            last_step = time.time()
 
+            while True:
+                key = stdscr.getch()
+                now = time.time()
 
-def position_motor(stdscr, additional_text):
-    stdscr.nodelay(True)
-    stdscr.clear()
-    stdscr.addstr(f"{additional_text}Use arrow keys to move motors. Press 'q' to quit.\n")
-    stdscr.addstr("Current position will be used for measurements.\n")
-    stdscr.refresh()
+                if key == ord('q'):
+                    break
+                elif key == ord('f'):
+                    fast_mode = not fast_mode
+                    stdscr.clear()
+                    stdscr.addstr("Arrow keys to move, 'q' to quit, 'f' for fast mode\n")
+                    stdscr.addstr(f"Current mode: {'FAST' if fast_mode else 'NORMAL'}\n")
+                    stdscr.addstr("Web dashboard: http://localhost:5000\n")
+                    stdscr.refresh()
 
-    while True:
-        key = stdscr.getch()
+                steps = 5 if fast_mode else 1
+                delay = 0.05 if fast_mode else 0.1
 
-        if key == curses.KEY_UP:
-            move_y(BACKWARD)
-        elif key == curses.KEY_DOWN:
-            move_y(FORWARD)
-        elif key == curses.KEY_LEFT:
-            move_x(BACKWARD)
-        elif key == curses.KEY_RIGHT:
-            move_x(FORWARD)
-        elif key == ord("q"):
-            break
-        time.sleep(0.001)
+                if now - last_step > delay:
+                    if key == curses.KEY_UP:
+                        self.move_motor('y', stepper.BACKWARD, steps)
+                    elif key == curses.KEY_DOWN:
+                        self.move_motor('y', stepper.FORWARD, steps)
+                    elif key == curses.KEY_LEFT:
+                        self.move_motor('x', stepper.BACKWARD, steps)
+                    elif key == curses.KEY_RIGHT:
+                        self.move_motor('x', stepper.FORWARD, steps)
+                    last_step = now
 
+                time.sleep(0.01)
 
-def calibrate_baseline(num_samples=50, sample_interval=0.1, measurement_time=1.0):
-    """
-    Perform baseline calibration by taking multiple measurements
+        curses.wrapper(_position)
 
-    Args:
-        num_samples: Number of baseline measurements to take
-        sample_interval: Time between measurements (seconds)
-        measurement_time: Time to spend collecting samples for each measurement
-    """
-    global baseline_data, baseline_level, baseline_std
+    def calibrate_baseline(self, num_samples=30, measurement_time=1.0):
+        """Simplified baseline calibration"""
+        print(f"\nCalibrating baseline...")
+        print(f"Taking {num_samples} samples ({measurement_time}s each)")
+        print("Point antenna away from galactic plane. Press Enter to start...")
+        input()
 
-    print(f"\nStarting baseline calibration...")
-    print(f"Taking {num_samples} measurements")
-    print(f"Each measurement collects data for {measurement_time}s")
-    print(f"Total calibration time: ~{(num_samples * (measurement_time + sample_interval)):.1f}s")
-    print("Point antenna to cold sky region (away from galactic plane)")
-    print("Press Enter to start calibration...")
-    input()
+        with self.data_lock:
+            self.web_data['status'] = 'calibrating'
 
-    baseline_data = []
-    timestamps = []
+        baseline_data = []
+        for i in range(num_samples):
+            power = self.measure_power(measurement_time)
+            baseline_data.append(power)
+            print(f"Sample {i+1}/{num_samples}: {power:.2f} dB")
 
-    print("Calibrating", end="", flush=True)
+            with self.data_lock:
+                self.web_data['progress'] = (i + 1) / num_samples * 100
 
-    for i in range(num_samples):
-        timestamp = time.time()
-        power = measure_power_rtlsdr(measurement_time)
+        self.baseline_level = np.mean(baseline_data)
+        self.baseline_std = np.std(baseline_data)
 
-        baseline_data.append(power)
-        timestamps.append(timestamp)
+        print(f"\nBaseline: {self.baseline_level:.2f} ± {self.baseline_std:.2f} dB")
 
-        print(".", end="", flush=True)
+        with self.data_lock:
+            self.web_data['status'] = 'baseline_complete'
+            self.web_data['stats']['baseline_level'] = self.baseline_level
+            self.web_data['stats']['baseline_std'] = self.baseline_std
 
-        # Short pause between measurements
-        if i < num_samples - 1:  # Don't pause after last measurement
-            time.sleep(sample_interval)
+        return baseline_data
 
-    print(" Done!")
+    def create_plot_image(self, plot_type='skymap'):
+        """Create plot and return as base64 encoded image"""
+        fig, ax = plt.subplots(figsize=(8, 6))
 
-    # Calculate statistics
-    baseline_level = np.mean(baseline_data)
-    baseline_std = np.std(baseline_data)
+        if plot_type == 'skymap' and self.sky_map is not None:
+            im = ax.imshow(self.sky_map, origin='lower', cmap='plasma')
+            ax.set_title('Sky Map (dB above baseline)')
+            ax.set_xlabel('Azimuth')
+            ax.set_ylabel('Elevation')
+            plt.colorbar(im, ax=ax)
 
-    print(f"\nBaseline Calibration Results:")
-    print(f"  Mean power: {baseline_level:.2f} dB")
-    print(f"  Std deviation: {baseline_std:.2f} dB")
-    print(f"  Min power: {np.min(baseline_data):.2f} dB")
-    print(f"  Max power: {np.max(baseline_data):.2f} dB")
-    print(f"  Measurement time per sample: {measurement_time}s")
+        elif plot_type == 'recent' and len(self.live_data) > 0:
+            ax.plot(list(self.live_data), 'b-', alpha=0.7)
+            ax.axhline(y=0, color='r', linestyle='--', alpha=0.5)
+            if self.baseline_std > 0:
+                ax.axhline(y=3*self.baseline_std, color='orange', linestyle=':', alpha=0.7)
+            ax.set_title('Recent Measurements')
+            ax.set_xlabel('Measurement Number')
+            ax.set_ylabel('Power - Baseline (dB)')
+            ax.grid(True, alpha=0.3)
 
-    # Plot baseline data
-    plot_baseline_data()
+        elif plot_type == 'distribution' and len(self.scan_data) > 5:
+            all_powers = [d['calibrated_power'] for d in self.scan_data]
+            ax.hist(all_powers, bins=20, alpha=0.7, color='skyblue')
+            ax.axvline(x=0, color='r', linestyle='--', alpha=0.5)
+            ax.set_title('Signal Distribution')
+            ax.set_xlabel('Power - Baseline (dB)')
+            ax.set_ylabel('Count')
+            ax.grid(True, alpha=0.3)
 
-    return baseline_level, baseline_std
+        # Convert plot to base64 string
+        img_buffer = io.BytesIO()
+        plt.savefig(img_buffer, format='png', bbox_inches='tight', dpi=100)
+        img_buffer.seek(0)
+        img_str = base64.b64encode(img_buffer.read()).decode()
+        plt.close(fig)
 
+        return f"data:image/png;base64,{img_str}"
 
-def plot_baseline_data():
-    """
-    Plot the baseline calibration data
-    """
-    if not baseline_data:
-        print("No baseline data to plot")
-        return
+    def update_web_data(self, x, y, calibrated_power, progress):
+        """Update web dashboard data"""
+        with self.data_lock:
+            self.web_data['current_measurement'] = {
+                'x': int(x), 'y': int(y), 'power': float(calibrated_power)
+            }
+            self.web_data['progress'] = float(progress)
 
-    plt.figure(figsize=(12, 8))
+            # Update stats
+            if self.sky_map is not None:
+                detections_3sigma = int(np.sum(self.sky_map > 3 * self.baseline_std))
+                detections_5sigma = int(np.sum(self.sky_map > 5 * self.baseline_std))
+                max_signal = float(np.max(self.sky_map))
 
-    # Time series plot
-    plt.subplot(2, 2, 1)
-    plt.plot(baseline_data, 'b-', alpha=0.7)
-    plt.axhline(y=baseline_level, color='r', linestyle='--', label=f'Mean: {baseline_level:.2f} dB')
-    plt.axhline(y=baseline_level + baseline_std, color='orange', linestyle=':', alpha=0.7, label=f'+1σ: {baseline_level + baseline_std:.2f} dB')
-    plt.axhline(y=baseline_level - baseline_std, color='orange', linestyle=':', alpha=0.7, label=f'-1σ: {baseline_level - baseline_std:.2f} dB')
-    plt.xlabel('Sample Number')
-    plt.ylabel('Power (dB)')
-    plt.title('Baseline Calibration Time Series')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-
-    # Histogram
-    plt.subplot(2, 2, 2)
-    plt.hist(baseline_data, bins=20, alpha=0.7, color='skyblue', edgecolor='black')
-    plt.axvline(x=baseline_level, color='r', linestyle='--', label=f'Mean: {baseline_level:.2f} dB')
-    plt.xlabel('Power (dB)')
-    plt.ylabel('Frequency')
-    plt.title('Baseline Power Distribution')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-
-    # Statistics text
-    plt.subplot(2, 2, 3)
-    plt.axis('off')
-    stats_text = f"""
-    Baseline Calibration Statistics:
-    
-    Mean Power: {baseline_level:.3f} dB
-    Std Deviation: {baseline_std:.3f} dB
-    Min Power: {np.min(baseline_data):.3f} dB
-    Max Power: {np.max(baseline_data):.3f} dB
-    Range: {np.max(baseline_data) - np.min(baseline_data):.3f} dB
-    
-    Samples: {len(baseline_data)}
-    Frequency: {SDR_CONFIG['center_freq']/1e9:.6f} GHz
-    Sample Rate: {SDR_CONFIG['sample_rate']/1e6:.3f} MHz
-    """
-    plt.text(0.1, 0.9, stats_text, transform=plt.gca().transAxes,
-             verticalalignment='top', fontfamily='monospace', fontsize=10)
-
-    # Running average
-    plt.subplot(2, 2, 4)
-    running_avg = np.cumsum(baseline_data) / np.arange(1, len(baseline_data) + 1)
-    plt.plot(running_avg, 'g-', linewidth=2, label='Running Average')
-    plt.axhline(y=baseline_level, color='r', linestyle='--', label=f'Final Mean: {baseline_level:.2f} dB')
-    plt.xlabel('Sample Number')
-    plt.ylabel('Running Average (dB)')
-    plt.title('Baseline Convergence')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-
-    # Save the plot
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"baseline_calibration_{timestamp}.png"
-    plt.savefig(filename, dpi=300, bbox_inches='tight')
-    print(f"Baseline calibration plot saved as: {filename}")
-
-    plt.show()
-
-
-def run_scan(x_steps, y_steps, steps_per_point, step_delay, measurement_time):
-    """
-    Run the sky scan with baseline subtraction
-
-    Args:
-        x_steps: Number of steps in X direction
-        y_steps: Number of steps in Y direction
-        steps_per_point: Motor steps between measurement points
-        step_delay: Delay between motor steps
-        measurement_time: Time to collect samples at each point
-    """
-    global scan_data
-
-    if baseline_level == 0:
-        print("ERROR: No baseline calibration performed!")
-        return None
-
-    print(f"\nStarting sky scan...")
-    print(f"Baseline level: {baseline_level:.2f} ± {baseline_std:.2f} dB")
-    print(f"Measurement time per point: {measurement_time}s")
-    print(f"Estimated scan time: {(x_steps * y_steps * measurement_time / 60):.1f} minutes")
-
-    # Initialize scan data array
-    sky_map = np.zeros((y_steps, x_steps))
-    scan_data = []
-
-    try:
-        total_points = x_steps * y_steps
-        current_point = 0
-        start_time = time.time()
-
-        for y in range(y_steps):
-            print(f"\nScanning row {y+1}/{y_steps}")
-
-            for x in range(x_steps):
-                # Take measurement over specified time window
-                print(f"  Point ({x+1},{y+1}) - measuring for {measurement_time}s...", end="", flush=True)
-                raw_power = measure_power_rtlsdr(measurement_time)
-                calibrated_power = raw_power - baseline_level
-
-                # Store data
-                sky_map[y, x] = calibrated_power
-                scan_data.append({
-                    'x': x, 'y': y,
-                    'raw_power': raw_power,
-                    'calibrated_power': calibrated_power,
-                    'timestamp': time.time(),
-                    'measurement_time': measurement_time
+                self.web_data['stats'].update({
+                    'detections_3sigma': detections_3sigma,
+                    'detections_5sigma': detections_5sigma,
+                    'max_signal': max_signal,
+                    'total_points': len(self.scan_data)
                 })
 
-                current_point += 1
-                progress = (current_point / total_points) * 100
-                elapsed = time.time() - start_time
-                eta = (elapsed / current_point) * (total_points - current_point)
+            # Update plots (every 10 measurements to avoid overload)
+            if len(self.scan_data) % 10 == 0:
+                self.web_data['plots'] = {
+                    'skymap': self.create_plot_image('skymap'),
+                    'recent': self.create_plot_image('recent'),
+                    'distribution': self.create_plot_image('distribution')
+                }
 
-                print(f" = {raw_power:.2f} dB (raw) / {calibrated_power:.2f} dB (cal) [{progress:.1f}%] ETA: {eta/60:.1f}min")
+    def run_scan(self, x_steps=20, y_steps=20, steps_per_point=2, measurement_time=1.0):
+        """Run the main scan with web dashboard updates"""
+        if self.baseline_level == 0:
+            print("ERROR: Run baseline calibration first!")
+            return None
 
-                # Move to next position
-                if x < x_steps - 1:
-                    for _ in range(steps_per_point):
-                        move_x(FORWARD)
+        print(f"\nStarting {x_steps}x{y_steps} scan...")
+        print(f"Web dashboard: http://localhost:5000")
+        print(f"Estimated time: {(x_steps * y_steps * measurement_time / 60):.1f} minutes")
 
-            # Move to next row
-            if y < y_steps - 1:
-                print("  Moving to next row...")
-                # Return to start of row
-                for _ in range((x_steps - 1) * steps_per_point):
-                    move_x(BACKWARD)
+        with self.data_lock:
+            self.web_data['status'] = 'scanning'
 
-                # Move up one row
-                for _ in range(steps_per_point):
-                    move_y(FORWARD)
+        # Initialize sky map
+        self.sky_map = np.zeros((y_steps, x_steps))
+        self.scan_data = []
+        total_points = x_steps * y_steps
+        start_time = time.time()
 
-        total_time = time.time() - start_time
-        print(f"\nScan complete! Total time: {total_time/60:.1f} minutes")
-        return sky_map
+        try:
+            for y in range(y_steps):
+                print(f"\nRow {y+1}/{y_steps}")
 
-    except KeyboardInterrupt:
-        print("\nScan interrupted by user")
-        return sky_map
-    except Exception as e:
-        print(f"\nError during scan: {e}")
-        return sky_map
+                for x in range(x_steps):
+                    # Measure
+                    raw_power = self.measure_power(measurement_time)
+                    calibrated_power = raw_power - self.baseline_level
 
-def plot_results(sky_map, x_steps, y_steps, steps_per_point):
-    """
-    Plot the scan results
-    """
-    if sky_map is None:
-        print("No scan data to plot")
-        return
+                    # Store data
+                    self.scan_data.append({
+                        'x': x, 'y': y,
+                        'raw_power': raw_power,
+                        'calibrated_power': calibrated_power,
+                        'timestamp': time.time()
+                    })
 
-    plt.figure(figsize=(15, 10))
+                    # Update sky map and live data
+                    self.sky_map[y, x] = calibrated_power
+                    self.live_data.append(calibrated_power)
 
-    # Main sky map
-    plt.subplot(2, 3, (1, 4))
-    im = plt.imshow(sky_map, origin='lower', cmap='plasma',
-                   extent=[0, x_steps, 0, y_steps], aspect='auto')
-    plt.colorbar(im, label="Signal Above Background (dB)")
-    plt.xlabel(f"Azimuth (points, {steps_per_point} steps each)")
-    plt.ylabel(f"Elevation (points, {steps_per_point} steps each)")
-    plt.title("1.42 GHz Hydrogen Line Sky Map")
-    plt.grid(True, alpha=0.3)
+                    # Update web dashboard
+                    progress = (len(self.scan_data) / total_points) * 100
+                    self.update_web_data(x, y, calibrated_power, progress)
 
-    # Signal statistics
-    plt.subplot(2, 3, 2)
-    plt.hist(sky_map.flatten(), bins=30, alpha=0.7, color='lightblue', edgecolor='black')
-    plt.axvline(x=0, color='r', linestyle='--', label='Background Level')
-    plt.axvline(x=np.mean(sky_map), color='orange', linestyle='--', label=f'Mean: {np.mean(sky_map):.2f} dB')
-    plt.xlabel('Signal Above Background (dB)')
-    plt.ylabel('Frequency')
-    plt.title('Signal Distribution')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
+                    print(f"  ({x}, {y}): {calibrated_power:.2f} dB")
 
-    # Scan statistics
-    plt.subplot(2, 3, 3)
-    plt.axis('off')
-    stats_text = f"""
-    Scan Statistics:
-    
-    Background Level: {baseline_level:.2f} ± {baseline_std:.2f} dB
-    
-    Max Signal: {np.max(sky_map):.2f} dB
-    Min Signal: {np.min(sky_map):.2f} dB
-    Mean Signal: {np.mean(sky_map):.2f} dB
-    Std Deviation: {np.std(sky_map):.2f} dB
-    
-    Detections > 3σ: {np.sum(sky_map > 3 * baseline_std)}
-    Detections > 5σ: {np.sum(sky_map > 5 * baseline_std)}
-    
-    Grid Size: {x_steps} × {y_steps}
-    Total Points: {x_steps * y_steps}
-    """
-    plt.text(0.1, 0.9, stats_text, transform=plt.gca().transAxes,
-             verticalalignment='top', fontfamily='monospace', fontsize=10)
+                    # Move to next position
+                    if x < x_steps - 1:
+                        self.move_motor('x', stepper.FORWARD, steps_per_point)
 
-    # Signal vs position plots
-    plt.subplot(2, 3, 5)
-    x_profile = np.mean(sky_map, axis=0)
-    plt.plot(x_profile, 'b-', linewidth=2)
-    plt.axhline(y=0, color='r', linestyle='--', alpha=0.5)
-    plt.xlabel('Azimuth Position')
-    plt.ylabel('Mean Signal (dB)')
-    plt.title('Azimuth Profile')
-    plt.grid(True, alpha=0.3)
+                # Move to next row
+                if y < y_steps - 1:
+                    # Return to start of row
+                    self.move_motor('x', stepper.BACKWARD, (x_steps - 1) * steps_per_point)
+                    # Move up one row
+                    self.move_motor('y', stepper.FORWARD, steps_per_point)
 
-    plt.subplot(2, 3, 6)
-    y_profile = np.mean(sky_map, axis=1)
-    plt.plot(y_profile, 'g-', linewidth=2)
-    plt.axhline(y=0, color='r', linestyle='--', alpha=0.5)
-    plt.xlabel('Elevation Position')
-    plt.ylabel('Mean Signal (dB)')
-    plt.title('Elevation Profile')
-    plt.grid(True, alpha=0.3)
+            total_time = time.time() - start_time
+            print(f"\nScan complete! Time: {total_time/60:.1f} minutes")
 
-    plt.tight_layout()
+            with self.data_lock:
+                self.web_data['status'] = 'complete'
+                # Final plot update
+                self.web_data['plots'] = {
+                    'skymap': self.create_plot_image('skymap'),
+                    'recent': self.create_plot_image('recent'),
+                    'distribution': self.create_plot_image('distribution')
+                }
 
-    # Save the plot
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"sky_map_{timestamp}.png"
-    plt.savefig(filename, dpi=300, bbox_inches='tight')
-    print(f"Sky map plot saved as: {filename}")
+            return self.sky_map
 
-    plt.show()
+        except KeyboardInterrupt:
+            print("\nScan interrupted!")
+            with self.data_lock:
+                self.web_data['status'] = 'interrupted'
+            return self.sky_map
 
-def save_scan_data(sky_map, x_steps, y_steps, steps_per_point):
-    """
-    Save all scan data to files
-    """
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    def start_web_server(self):
+        """Start the web server in a separate thread"""
+        def run_server():
+            self.app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
 
-    # Save sky map array
-    np.save(f"sky_map_{timestamp}.npy", sky_map)
+        web_thread = threading.Thread(target=run_server, daemon=True)
+        web_thread.start()
+        print("Web dashboard started at http://localhost:5000")
+        return web_thread
 
-    # Save detailed scan data
-    scan_array = np.array([(d['x'], d['y'], d['raw_power'], d['calibrated_power'], d['timestamp'])
-                          for d in scan_data])
-    np.save(f"scan_data_{timestamp}.npy", scan_array)
+    def save_data(self, filename_prefix=None):
+        """Save scan data"""
+        if not filename_prefix:
+            filename_prefix = datetime.now().strftime("scan_%Y%m%d_%H%M%S")
 
-    # Save baseline data
-    baseline_array = np.array(baseline_data)
-    np.save(f"baseline_data_{timestamp}.npy", baseline_array)
+        if self.sky_map is not None:
+            np.save(f"{filename_prefix}_skymap.npy", self.sky_map)
 
-    # Save metadata
-    metadata = {
-        'timestamp': timestamp,
-        'x_steps': x_steps,
-        'y_steps': y_steps,
-        'steps_per_point': steps_per_point,
-        'baseline_level': baseline_level,
-        'baseline_std': baseline_std,
-        'sdr_config': SDR_CONFIG
+        if self.scan_data:
+            scan_array = np.array([(d['x'], d['y'], d['raw_power'], d['calibrated_power'])
+                                  for d in self.scan_data])
+            np.save(f"{filename_prefix}_data.npy", scan_array)
+
+        metadata = {
+            'baseline_level': self.baseline_level,
+            'baseline_std': self.baseline_std,
+            'config': self.config,
+            'timestamp': datetime.now().isoformat()
+        }
+        np.save(f"{filename_prefix}_metadata.npy", metadata)
+
+        print(f"Data saved with prefix: {filename_prefix}")
+
+
+def main():
+    # Configuration
+    config = {
+        'x_steps': 15,
+        'y_steps': 15,
+        'steps_per_point': 2,
+        'measurement_time': 1.5  # seconds per measurement
     }
-    np.save(f"metadata_{timestamp}.npy", metadata)
 
-    print(f"All data saved with timestamp: {timestamp}")
+    scanner = HydrogenScanner()
+
+    # Start web server
+    scanner.start_web_server()
+
+    print("Hydrogen Line Scanner v2.0 - Web Dashboard")
+    print("=" * 50)
+    print(f"Grid: {config['x_steps']}x{config['y_steps']}")
+    print(f"Frequency: {scanner.config['center_freq']/1e9:.6f} GHz")
+    print(f"Estimated time: {(config['x_steps'] * config['y_steps'] * config['measurement_time'] / 60):.1f} minutes")
+    print("Web dashboard: http://localhost:5000")
+    print("=" * 50)
+
+    # Step 1: Position for baseline
+    print("\n1. Position antenna for baseline calibration")
+    scanner.manual_position()
+
+    # Step 2: Calibrate baseline
+    print("\n2. Baseline calibration")
+    scanner.calibrate_baseline(num_samples=20, measurement_time=config['measurement_time'])
+
+    # Step 3: Position for scan
+    print("\n3. Position for scan start")
+    scanner.manual_position()
+
+    # Step 4: Run scan
+    print("\n4. Running scan with web dashboard")
+    input("Press Enter to start scan...")
+
+    sky_map = scanner.run_scan(
+        x_steps=config['x_steps'],
+        y_steps=config['y_steps'],
+        steps_per_point=config['steps_per_point'],
+        measurement_time=config['measurement_time']
+    )
+
+    # Step 5: Save data
+    if sky_map is not None:
+        scanner.save_data()
+        print("Scan complete! Web dashboard will remain active.")
+        print("Press Ctrl+C to exit.")
+
+        # Keep web server running
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("Shutting down...")
+    else:
+        print("No data to save.")
 
 
 if __name__ == "__main__":
-    x_steps, y_steps = 20, 20  # Reduced for testing
-    steps_per_point = 2
-    step_delay = 0.01
-    measurement_time = 2.0  # Time to collect samples at each point (seconds)
-
-    print("Hydrogen Line Sky Scanner")
-    print("=" * 50)
-    print(f"Configuration:")
-    print(f"  Grid size: {x_steps} x {y_steps}")
-    print(f"  Steps per point: {steps_per_point}")
-    print(f"  Step delay: {step_delay}s")
-    print(f"  Measurement time per point: {measurement_time}s")
-    print(f"  Total points: {x_steps * y_steps}")
-    print(f"  Estimated scan time: {(x_steps * y_steps * measurement_time / 60):.1f} minutes")
-    print(f"  Frequency: {SDR_CONFIG['center_freq']/1e9:.6f} GHz")
-
-    # Step 1: Background calibration
-    print("\n" + "=" * 50)
-    print("STEP 1: BASELINE CALIBRATION")
-    print("=" * 50)
-    curses.wrapper(position_motor, "Position antenna for baseline calibration (cold sky region). ")
-    calibrate_baseline(num_samples=30, sample_interval=0.1, measurement_time=measurement_time)
-
-    # Step 2: Position for scan
-    print("\n" + "=" * 50)
-    print("STEP 2: POSITION FOR SCAN")
-    print("=" * 50)
-    curses.wrapper(position_motor, "Position antenna for scan start. ")
-
-    # Step 3: Run scan
-    print("\n" + "=" * 50)
-    print("STEP 3: SKY SCAN")
-    print("=" * 50)
-    print("Press Enter to start scan...")
-    input()
-
-    sky_map = run_scan(x_steps, y_steps, steps_per_point, step_delay, measurement_time)
-
-    # Step 4: Plot and save results
-    print("\n" + "=" * 50)
-    print("STEP 4: RESULTS")
-    print("=" * 50)
-    if sky_map is not None:
-        plot_results(sky_map, x_steps, y_steps, steps_per_point)
-        save_scan_data(sky_map, x_steps, y_steps, steps_per_point)
-    else:
-        print("No scan data to process")
+    main()
