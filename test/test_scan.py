@@ -316,11 +316,11 @@ class HydrogenScanner:
         total_points = x_steps * y_steps
 
         try:
-            for y in range(y_steps):
+            for x in range(x_steps):
                 if not self.scanning:
                     break
 
-                for x in range(x_steps):
+                for y in range(y_steps):
                     if not self.scanning:
                         break
 
@@ -365,18 +365,18 @@ class HydrogenScanner:
 
                     self.emit_web_update()
 
-                    # Move X (horizontal scan)
-                    if x < x_steps - 1:
-                        self.move_motor('x', stepper.FORWARD, x_step_size)
+                    # Move Y (vertical scan) - move down through the column
+                    if y < y_steps - 1:
+                        self.move_motor('y', stepper.BACKWARD, y_step_size)
 
                     time.sleep(0.1)
 
-                # Move Y (next row)
-                if y < y_steps - 1 and self.scanning:
-                    # Return to start of X
-                    self.move_motor('x', stepper.BACKWARD, (x_steps - 1) * x_step_size)
-                    # Move one row down in Y
-                    self.move_motor('y', stepper.FORWARD, y_step_size)
+                # Move X (next column)
+                if x < x_steps - 1 and self.scanning:
+                    # Return to start of Y (top)
+                    self.move_motor('y', stepper.FORWARD, (y_steps - 1) * y_step_size)
+                    # Move one column right in X
+                    self.move_motor('x', stepper.FORWARD, x_step_size)
 
             if self.scanning:
                 with self.data_lock:
@@ -395,7 +395,7 @@ class HydrogenScanner:
 
         self.scanning = False
         self.emit_web_update()
-
+        
     def update_plots(self):
         """Update all plots"""
         plots = {}
