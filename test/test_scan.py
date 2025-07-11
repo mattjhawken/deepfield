@@ -111,7 +111,7 @@ class HydrogenScanner:
         def handle_move_motor(data):
             try:
                 direction = data['direction']
-                steps = data.get('steps', 1)
+                steps = data.get('steps', 5)
                 self.move_motor_web(direction, steps)
             except Exception as e:
                 emit('error', {'message': f'Motor error: {str(e)}'})
@@ -302,8 +302,16 @@ class HydrogenScanner:
         
 
     def run_scan_web(self, x_steps=15, y_steps=15, measurement_time=1.0,
-                     x_step_size=4, y_step_size=4):
-        """Web-controlled scan with configurable step sizes"""
+                     x_step_size=1, y_step_size=1):
+        """
+        Earth-rotation scan: Move vertically (Y) and let Earth's rotation provide horizontal sweep
+
+        Args:
+            y_steps: Number of elevation steps to scan
+            measurement_time: Time for each individual measurement
+            time_per_position: Time to spend at each Y position (seconds)
+            y_step_size: Motor steps between Y positions
+        """
         self.scanning = True
 
         with self.data_lock:
@@ -311,45 +319,76 @@ class HydrogenScanner:
             self.web_data['progress'] = 0
         self.emit_web_update()
 
-        # Initialize
-        self.sky_map = np.zeros((y_steps, x_steps))
+        # Calculate how many measurements we'll take at each Y position
+        measurements_per_y = int(time_per_position / (measurement_time + 0.1))  # 0.1s for processing
+        total_measurements = y_steps * measurements_per_y
+
+        # Initialize data structures
         self.scan_data = []
-        total_points = x_steps * y_steps
+        # Sky map: Y positions x Time samples (simulating Earth rotation)
+        self.sky_map = np.zeros((y_steps, measurements_per_y))
+
+        measurement_count = 0
+        scan_start_time = time.time()
 
         try:
-            for y in range(y_steps):
+            print(
+                f"Starting Earth-rotation scan: {y_steps} Y positions, {measurements_per_y} measurements per position")
+            print(f"Total scan time: {(y_steps * time_per_position) / 60:.1f} minutes")
+
+            for y_idx in range(y_steps):
                 if not self.scanning:
                     break
 
-                for x in range(x_steps):
+                print(f"Moving to Y position {y_idx + 1}/{y_steps}")
+
+                # Move to next Y position (except for first position)
+                if y_idx > 0:
+                    self.move_motor('y', stepper.FORWARD, y_step_size)
+                    time.sleep(0.5)  # Allow settling time
+
+                # Take measurements at this Y position while Earth rotates
+                position_start_time = time.time()
+
+                for time_idx in range(measurements_per_y):
                     if not self.scanning:
                         break
+
+                    # Calculate elapsed time since scan start (represents Earth rotation)
+                    elapsed_time = time.time() - scan_start_time
 
                     # Measure power
                     raw_power = self.measure_power(measurement_time)
                     calibrated_power = raw_power - self.baseline_level
 
-                    # Store data
+                    # Store data with time information
                     self.scan_data.append({
-                        'x': x, 'y': y,
+                        'y_idx': y_idx,
+                        'time_idx': time_idx,
+                        'y_position': y_idx,
+                        'elapsed_time': elapsed_time,
                         'raw_power': raw_power,
                         'calibrated_power': calibrated_power,
                         'timestamp': time.time()
                     })
 
-                    self.sky_map[y, x] = calibrated_power
+                    # Store in sky map
+                    self.sky_map[y_idx, time_idx] = calibrated_power
                     self.live_data.append(calibrated_power)
 
-                    # Update web data
-                    points_completed = len(self.scan_data)
-                    progress = (points_completed / total_points) * 100
+                    measurement_count += 1
+                    progress = (measurement_count / total_measurements) * 100
 
+                    # Update web data
                     with self.data_lock:
                         self.web_data['current_measurement'] = {
-                            'x': x, 'y': y, 'power': calibrated_power
+                            'x': time_idx,  # X now represents time/Earth rotation
+                            'y': y_idx,
+                            'power': calibrated_power
                         }
                         self.web_data['progress'] = progress
 
+                        # Update statistics
                         detections_3sigma = int(np.sum(self.sky_map > 3 * self.baseline_std))
                         detections_5sigma = int(np.sum(self.sky_map > 5 * self.baseline_std))
                         max_signal = float(np.max(self.sky_map))
@@ -361,30 +400,31 @@ class HydrogenScanner:
                             'total_points': len(self.scan_data)
                         })
 
-                        if points_completed % 10 == 0:
+                        # Update plots periodically
+                        if measurement_count % 10 == 0:
                             self.update_plots()
 
                     self.emit_web_update()
 
-                    # Move X (horizontal scan)
-                    if x < x_steps - 1:
-                        self.move_motor('x', stepper.FORWARD, x_step_size)
+                    # Wait until it's time for the next measurement
+                    time_to_wait = (position_start_time + (time_idx + 1) * (
+                                time_per_position / measurements_per_y)) - time.time()
+                    if time_to_wait > 0:
+                        time.sleep(time_to_wait)
 
-                    time.sleep(0.1)
-
-                # Move Y (next row)
-                if y < y_steps - 1 and self.scanning:
-                    # Return to start of X
-                    self.move_motor('x', stepper.BACKWARD, (x_steps - 1) * x_step_size)
-                    # Move one row down in Y
-                    self.move_motor('y', stepper.FORWARD, y_step_size)
+                print(f"Completed Y position {y_idx + 1}/{y_steps} ({measurements_per_y} measurements)")
 
             if self.scanning:
                 with self.data_lock:
                     self.web_data['status'] = 'scan_complete'
                     self.web_data['progress'] = 100
                     self.update_plots()
-                print(f"Scan complete! {len(self.scan_data)} points collected")
+
+                total_time = time.time() - scan_start_time
+                print(f"Earth-rotation scan complete!")
+                print(f"Total measurements: {len(self.scan_data)}")
+                print(f"Total time: {total_time / 60:.1f} minutes")
+                print(f"Sky coverage: {y_steps} elevation positions × {measurements_per_y} time samples")
             else:
                 with self.data_lock:
                     self.web_data['status'] = 'scan_stopped'
