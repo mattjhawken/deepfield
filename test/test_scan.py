@@ -1,9 +1,6 @@
 """
 Hydrogen line manual testing and background scanning with web dashboard for remote access
 """
-"""
-Hydrogen line scanner with improved keyboard handling and real-time web dashboard
-"""
 import sys
 import time
 import board
@@ -33,6 +30,27 @@ except ImportError:
     print("RTL-SDR not available, using simulation mode")
 
 
+def detect_hydrogen_line(freqs, psd):
+    """Detect hydrogen line in spectrum"""
+    # Find center frequency bin
+    center_idx = np.argmin(np.abs(freqs))
+
+    # Define hydrogen line window (±10 kHz)
+    line_width = int(10e3 / (freqs[1] - freqs[0]))  # Convert to bins
+    start_idx = max(0, center_idx - line_width)
+    end_idx = min(len(psd), center_idx + line_width)
+
+    # Extract line region and nearby continuum
+    line_power = np.mean(psd[start_idx:end_idx])
+
+    # Continuum from sides
+    continuum_left = np.mean(psd[max(0, start_idx - line_width):start_idx])
+    continuum_right = np.mean(psd[end_idx:min(len(psd), end_idx + line_width)])
+    continuum = (continuum_left + continuum_right) / 2
+
+    return line_power - continuum
+
+
 class HydrogenScanner:
     def __init__(self):
         self.kit = MotorKit(i2c=board.I2C())
@@ -52,12 +70,10 @@ class HydrogenScanner:
         self.sky_map = None
         self.live_data = deque(maxlen=100)
         self.current_position = {'x': 0, 'y': 0}
-
-        # Control state
-        self.scanning = False
-        self.calibrating = False
-        self.scan_thread = None
-        self.calibration_thread = None
+        self.spectrum_history = deque(maxlen=100)  # Store recent spectra
+        self.h_line_history = deque(maxlen=100)  # Store H-line detections
+        self.detection_log = []  # Log of significant detections
+        self.current_spectrum = None
 
         # Web dashboard data
         self.web_data = {
@@ -71,11 +87,22 @@ class HydrogenScanner:
                 'max_signal': 0,
                 'total_points': 0,
                 'detections_3sigma': 0,
-                'detections_5sigma': 0
+                'detections_5sigma': 0,
+                'h_line_detections': 0,
+                'avg_h_line_strength': 0,
+                'peak_h_line_strength': 0,
+                'h_line_baseline': 0
             },
             'plots': {},
             'baseline_calibrated': False
         }
+
+        # Control state
+        self.scanning = False
+        self.calibrating = False
+        self.scan_thread = None
+        self.calibration_thread = None
+
         self.data_lock = threading.Lock()
 
         # Flask app with SocketIO
@@ -165,14 +192,15 @@ class HydrogenScanner:
                 emit('error', {'message': 'System busy'})
                 return
 
-            power = self.measure_power(1.0)
-            calibrated = power - self.baseline_level if self.baseline_level != 0 else power
+            total_power, h_line_power = self.enhanced_measurement(1.0)
+            calibrated_power = total_power - self.baseline_level if self.baseline_level != 0 else total_power
 
             with self.data_lock:
                 self.web_data['current_measurement'] = {
                     'x': self.current_position['x'],
                     'y': self.current_position['y'],
-                    'power': calibrated
+                    'power': calibrated_power,
+                    'h_line_power': h_line_power
                 }
             self.emit_web_update()
 
@@ -181,14 +209,22 @@ class HydrogenScanner:
         with self.data_lock:
             self.socketio.emit('data_update', self.web_data)
 
-    def measure_power(self, measurement_time=1.0):
-        """Measure power with RTL-SDR or simulation"""
+    def measure_power_spectrum(self, measurement_time=1.0):
+        """Measure power spectrum instead of just total power"""
         if not RTL_SDR_AVAILABLE:
-            # Realistic simulation
-            base_noise = np.random.normal(-45, 2)
-            if np.random.random() < 0.15:  # 15% chance of H-line detection
-                base_noise += np.random.normal(2, 0.3)
-            return base_noise
+            # Simulate realistic H-line spectrum
+            freqs = np.linspace(-1e6, 1e6, 1024)  # ±1MHz around center
+            noise = np.random.normal(-45, 2, len(freqs))
+
+            # Add hydrogen line peak
+            if np.random.random() < 0.15:
+                h_line_idx = len(freqs) // 2  # Center frequency
+                width = 20  # Line width in bins
+                amplitude = np.random.normal(5, 1)
+                gaussian = amplitude * np.exp(-0.5 * ((np.arange(len(freqs)) - h_line_idx) / width) ** 2)
+                noise += gaussian
+
+            return freqs, noise
 
         try:
             sdr = RtlSdr()
@@ -197,13 +233,51 @@ class HydrogenScanner:
             sdr.gain = self.config['gain']
 
             samples = sdr.read_samples(self.config['samples_per_measurement'])
-            power_db = 10 * np.log10(np.mean(np.abs(samples) ** 2))
+
+            # Compute power spectral density
+            freqs, psd = scipy.signal.welch(samples, sdr.sample_rate, nperseg=1024)
+            freqs = freqs - sdr.sample_rate / 2  # Center at 0
+            psd_db = 10 * np.log10(psd)
+
             sdr.close()
-            return power_db
+            return freqs, psd_db
 
         except Exception as e:
             print(f"SDR error: {e}")
-            return np.random.normal(-45, 2)
+            return self.measure_power_spectrum(measurement_time)  # Fallback to simulation
+
+    def enhanced_measurement(self, measurement_time=1.0):
+        """Enhanced measurement with spectral analysis"""
+        freqs, psd = self.measure_power_spectrum(measurement_time)
+
+        # Store spectrum
+        self.current_spectrum = (freqs, psd)
+        self.spectrum_history.append(psd)
+
+        # Detect hydrogen line
+        h_line_power = detect_hydrogen_line(freqs, psd)
+        total_power = np.mean(psd)
+
+        # Store H-line measurement
+        self.h_line_history.append({
+            'timestamp': time.time(),
+            'h_line_power': h_line_power,
+            'total_power': total_power,
+            'position': self.current_position.copy()
+        })
+
+        # Log significant detections
+        if h_line_power > 3 * self.baseline_std:
+            detection = {
+                'timestamp': time.time(),
+                'position': self.current_position.copy(),
+                'h_line_power': h_line_power,
+                'total_power': total_power,
+                'significance': h_line_power / self.baseline_std if self.baseline_std > 0 else 0
+            }
+            self.detection_log.append(detection)
+
+        return total_power, h_line_power
 
     def move_motor_web(self, direction, steps=1):
         """Move motor from web interface"""
@@ -260,7 +334,7 @@ class HydrogenScanner:
             if not self.calibrating:  # Check for stop signal
                 break
 
-            power = self.measure_power(measurement_time)
+            power = self.enhanced_measurement(measurement_time)
             baseline_data.append(power)
 
             progress = (i + 1) / num_samples * 100
@@ -302,7 +376,7 @@ class HydrogenScanner:
 
     def run_scan_web(self, x_steps=64, y_steps=64, measurement_time=1.0,
                      x_step_size=1, y_step_size=1):
-        """Web-controlled scan with configurable step sizes"""
+        """Web-controlled scan with hydrogen line monitoring"""
         self.scanning = True
 
         with self.data_lock:
@@ -312,6 +386,7 @@ class HydrogenScanner:
 
         # Initialize
         self.sky_map = np.zeros((y_steps, x_steps))
+        self.h_line_map = np.zeros((y_steps, x_steps))  # New H-line map
         self.scan_data = []
         total_points = x_steps * y_steps
 
@@ -324,19 +399,21 @@ class HydrogenScanner:
                     if not self.scanning:
                         break
 
-                    # Measure power
-                    raw_power = self.measure_power(measurement_time)
-                    calibrated_power = raw_power - self.baseline_level
+                    # Enhanced measurement
+                    total_power, h_line_power = self.enhanced_measurement(measurement_time)
+                    calibrated_power = total_power - self.baseline_level
 
                     # Store data
                     self.scan_data.append({
                         'x': x, 'y': y,
-                        'raw_power': raw_power,
+                        'raw_power': total_power,
                         'calibrated_power': calibrated_power,
+                        'h_line_power': h_line_power,
                         'timestamp': time.time()
                     })
 
                     self.sky_map[y, x] = calibrated_power
+                    self.h_line_map[y, x] = h_line_power  # Store H-line data
                     self.live_data.append(calibrated_power)
 
                     # Update web data
@@ -345,18 +422,24 @@ class HydrogenScanner:
 
                     with self.data_lock:
                         self.web_data['current_measurement'] = {
-                            'x': x, 'y': y, 'power': calibrated_power
+                            'x': x, 'y': y,
+                            'power': calibrated_power,
+                            'h_line_power': h_line_power
                         }
                         self.web_data['progress'] = progress
 
-                        detections_3sigma = int(np.sum(self.sky_map > 3 * self.baseline_std))
-                        detections_5sigma = int(np.sum(self.sky_map > 5 * self.baseline_std))
-                        max_signal = float(np.max(self.sky_map))
+                        # Update H-line statistics
+                        h_line_detections = sum(1 for d in self.scan_data if d['h_line_power'] > 3 * self.baseline_std)
+                        avg_h_line = np.mean([d['h_line_power'] for d in self.scan_data])
+                        peak_h_line = max([d['h_line_power'] for d in self.scan_data])
 
                         self.web_data['stats'].update({
-                            'detections_3sigma': detections_3sigma,
-                            'detections_5sigma': detections_5sigma,
-                            'max_signal': max_signal,
+                            'h_line_detections': h_line_detections,
+                            'avg_h_line_strength': float(avg_h_line),
+                            'peak_h_line_strength': float(peak_h_line),
+                            'detections_3sigma': int(np.sum(self.sky_map > 3 * self.baseline_std)),
+                            'detections_5sigma': int(np.sum(self.sky_map > 5 * self.baseline_std)),
+                            'max_signal': float(np.max(self.sky_map)),
                             'total_points': len(self.scan_data)
                         })
 
@@ -365,7 +448,7 @@ class HydrogenScanner:
 
                     self.emit_web_update()
 
-                    # Move Y (vertical scan) - move up through the column
+                    # Move Y (vertical scan)
                     if y < y_steps - 1:
                         self.move_motor('y', stepper.FORWARD, y_step_size)
 
@@ -373,9 +456,7 @@ class HydrogenScanner:
 
                 # Move X (next column)
                 if x < x_steps - 1 and self.scanning:
-                    # Return to start of Y (bottom)
                     self.move_motor('y', stepper.BACKWARD, (y_steps - 1) * y_step_size)
-                    # Move one column right in X
                     self.move_motor('x', stepper.FORWARD, x_step_size)
 
             if self.scanning:
@@ -399,7 +480,7 @@ class HydrogenScanner:
     def update_plots(self):
         """Update all plots"""
         plots = {}
-        for plot_type in ['skymap', 'recent', 'distribution']:
+        for plot_type in ['skymap', 'hydrogen_line', 'distribution', 'spectrum']:
             plot_img = self.create_plot_image(plot_type)
             if plot_img:
                 plots[plot_type] = plot_img
@@ -422,19 +503,72 @@ class HydrogenScanner:
                     y_coords, x_coords = np.where(self.sky_map > 3 * self.baseline_std)
                     ax.scatter(x_coords, y_coords, c='red', s=30, alpha=0.7, marker='o')
 
-            elif plot_type == 'recent' and len(self.live_data) > 0:
-                ax.plot(list(self.live_data), 'b-', linewidth=2, alpha=0.8)
-                ax.axhline(y=0, color='r', linestyle='--', alpha=0.7, label='Baseline')
-                if self.baseline_std > 0:
-                    ax.axhline(y=3 * self.baseline_std, color='orange', linestyle=':',
-                               alpha=0.8, label='3σ threshold')
-                    ax.axhline(y=5 * self.baseline_std, color='red', linestyle=':',
-                               alpha=0.8, label='5σ threshold')
-                ax.set_title('Recent Measurements', fontsize=14)
-                ax.set_xlabel('Measurement Number', fontsize=12)
-                ax.set_ylabel('Power - Baseline (dB)', fontsize=12)
+            elif plot_type == 'hydrogen_line' and len(self.h_line_history) > 0:
+                # Plot hydrogen line detections over time
+                times = [h['timestamp'] for h in self.h_line_history]
+                h_powers = [h['h_line_power'] for h in self.h_line_history]
+
+                # Convert timestamps to relative time in minutes
+                if times:
+                    start_time = min(times)
+                    rel_times = [(t - start_time) / 60 for t in times]  # Convert to minutes
+
+                    ax.plot(rel_times, h_powers, 'b-', linewidth=2, alpha=0.8, label='H-line Power')
+                    ax.axhline(y=0, color='gray', linestyle='--', alpha=0.5, label='Baseline')
+
+                    if self.baseline_std > 0:
+                        ax.axhline(y=3 * self.baseline_std, color='orange', linestyle=':',
+                                   alpha=0.8, label='3σ Detection')
+                        ax.axhline(y=5 * self.baseline_std, color='red', linestyle=':',
+                                   alpha=0.8, label='5σ Strong Detection')
+
+                    # Highlight detections
+                    detection_times = [((h['timestamp'] - start_time) / 60) for h in self.h_line_history
+                                       if h['h_line_power'] > 3 * self.baseline_std]
+                    detection_powers = [h['h_line_power'] for h in self.h_line_history
+                                        if h['h_line_power'] > 3 * self.baseline_std]
+
+                    if detection_times:
+                        ax.scatter(detection_times, detection_powers, c='red', s=50,
+                                   alpha=0.8, marker='*', zorder=5, label='Detections')
+
+                    ax.set_title('Hydrogen Line Monitoring', fontsize=14)
+                    ax.set_xlabel('Time (minutes)', fontsize=12)
+                    ax.set_ylabel('H-line Power (dB)', fontsize=12)
+                    ax.grid(True, alpha=0.3)
+                    ax.legend()
+
+                    # Add statistics text
+                    if len(h_powers) > 0:
+                        avg_power = np.mean(h_powers)
+                        max_power = np.max(h_powers)
+                        detections = sum(1 for p in h_powers if p > 3 * self.baseline_std)
+
+                        stats_text = f'Avg: {avg_power:.2f} dB\nMax: {max_power:.2f} dB\nDetections: {detections}'
+                        ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
+                                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+            elif plot_type == 'spectrum' and hasattr(self, 'current_spectrum') and self.current_spectrum:
+                freqs, psd = self.current_spectrum
+                ax.plot(freqs / 1e3, psd, 'b-', linewidth=1)  # Convert to kHz
+                ax.set_title('Current Power Spectrum', fontsize=14)
+                ax.set_xlabel('Frequency Offset (kHz)', fontsize=12)
+                ax.set_ylabel('Power Spectral Density (dB/Hz)', fontsize=12)
                 ax.grid(True, alpha=0.3)
+
+                # Highlight hydrogen line region
+                ax.axvspan(-10, 10, alpha=0.2, color='red', label='H-line region')
                 ax.legend()
+
+            elif plot_type == 'waterfall' and len(self.spectrum_history) > 0:
+                # Show frequency evolution over time
+                waterfall_data = np.array(list(self.spectrum_history))
+                im = ax.imshow(waterfall_data.T, aspect='auto', origin='lower',
+                               cmap='plasma', extent=[0, len(waterfall_data), -500, 500])
+                ax.set_title('Spectral Waterfall', fontsize=14)
+                ax.set_xlabel('Time (measurements)', fontsize=12)
+                ax.set_ylabel('Frequency Offset (kHz)', fontsize=12)
+                plt.colorbar(im, ax=ax, label='Power (dB)')
 
             elif plot_type == 'distribution' and len(self.scan_data) > 5:
                 all_powers = [d['calibrated_power'] for d in self.scan_data]
