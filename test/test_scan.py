@@ -111,7 +111,7 @@ class HydrogenScanner:
         def handle_move_motor(data):
             try:
                 direction = data['direction']
-                steps = data.get('steps', 5)
+                steps = data.get('steps', 1)
                 self.move_motor_web(direction, steps)
             except Exception as e:
                 emit('error', {'message': f'Motor error: {str(e)}'})
@@ -208,9 +208,9 @@ class HydrogenScanner:
     def move_motor_web(self, direction, steps=1):
         """Move motor from web interface"""
         if direction == 'up':
-            self.move_motor('y', stepper.FORWARD, steps)
-        elif direction == 'down':
             self.move_motor('y', stepper.BACKWARD, steps)
+        elif direction == 'down':
+            self.move_motor('y', stepper.FORWARD, steps)
         elif direction == 'left':
             self.move_motor('x', stepper.BACKWARD, steps)
         elif direction == 'right':
@@ -299,11 +299,10 @@ class HydrogenScanner:
             daemon=True
         )
         self.scan_thread.start()
-        
 
     def run_scan_web(self, x_steps=15, y_steps=15, measurement_time=1.0,
                      x_step_size=4, y_step_size=4):
-        """Web-controlled scan with configurable step sizes"""
+        """Web-controlled scan with configurable step sizes - column by column"""
         self.scanning = True
 
         with self.data_lock:
@@ -317,11 +316,11 @@ class HydrogenScanner:
         total_points = x_steps * y_steps
 
         try:
-            for x in range(x_steps):
+            for x in range(x_steps):  # For each column
                 if not self.scanning:
                     break
 
-                for y in range(y_steps):
+                for y in range(y_steps):  # For each row in this column
                     if not self.scanning:
                         break
 
@@ -366,17 +365,17 @@ class HydrogenScanner:
 
                     self.emit_web_update()
 
-                    # Move X (horizontal scan)
+                    # Move Y (down the column)
                     if y < y_steps - 1:
-                        self.move_motor('y', stepper.BACKWARD, y_step_size)
+                        self.move_motor('y', stepper.FORWARD, y_step_size)
 
                     time.sleep(0.1)
 
-                # Move Y (next row)
+                # Move to next column
                 if x < x_steps - 1 and self.scanning:
-                    # Return to start of Y
-                    self.move_motor('y', stepper.FORWARD, (y_steps - 1) * y_step_size)
-                    # Move one row down in X
+                    # Return to top of Y
+                    self.move_motor('y', stepper.BACKWARD, (y_steps - 1) * y_step_size)
+                    # Move one column right in X
                     self.move_motor('x', stepper.FORWARD, x_step_size)
 
             if self.scanning:
@@ -394,8 +393,8 @@ class HydrogenScanner:
                 print("Returning to origin (0,0)...")
                 # Reverse X movement
                 self.move_motor('x', stepper.BACKWARD, (x_steps - 1) * x_step_size)
-                # Ensure Y is also reset (should be at last Y position)
-                self.move_motor('y', stepper.FORWARD, (y_steps - 1) * y_step_size)
+                # Y should already be at top, but ensure it's at 0
+                # (No Y movement needed since we reset Y at each column)
 
         except Exception as e:
             print(f"Scan error: {e}")
@@ -404,7 +403,7 @@ class HydrogenScanner:
 
         self.scanning = False
         self.emit_web_update()
-        
+
     def update_plots(self):
         """Update all plots"""
         plots = {}
