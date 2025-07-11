@@ -256,37 +256,51 @@ class HydrogenScanner:
 
         baseline_data = []
 
-        for i in range(num_samples):
-            if not self.calibrating:  # Check for stop signal
-                break
+        try:
+            for i in range(num_samples):
+                if not self.calibrating:  # Check for stop signal
+                    break
 
-            power = self.measure_power(measurement_time)
-            baseline_data.append(power)
+                power = self.measure_power(measurement_time)
+                baseline_data.append(power)
 
-            progress = (i + 1) / num_samples * 100
+                progress = (i + 1) / num_samples * 100
 
+                with self.data_lock:
+                    self.web_data['progress'] = progress
+                    # Fix: Ensure current_measurement exists and has proper structure
+                    if 'current_measurement' not in self.web_data or self.web_data['current_measurement'] is None:
+                        self.web_data['current_measurement'] = {}
+                    self.web_data['current_measurement']['power'] = power
+
+                    # Optional: Add calibration-specific info
+                    self.web_data['current_measurement']['calibration_sample'] = i + 1
+                    self.web_data['current_measurement']['total_samples'] = num_samples
+
+                self.emit_web_update()
+
+                time.sleep(0.1)  # Small delay
+
+            if self.calibrating and len(baseline_data) > 0:
+                self.baseline_level = np.mean(baseline_data)
+                self.baseline_std = np.std(baseline_data)
+
+                with self.data_lock:
+                    self.web_data['status'] = 'calibration_complete'
+                    self.web_data['progress'] = 100
+                    self.web_data['baseline_calibrated'] = True
+                    self.web_data['stats']['baseline_level'] = self.baseline_level
+                    self.web_data['stats']['baseline_std'] = self.baseline_std
+
+                print(f"Baseline calibration complete: {self.baseline_level:.2f} ± {self.baseline_std:.2f} dB")
+            else:
+                with self.data_lock:
+                    self.web_data['status'] = 'calibration_stopped'
+
+        except Exception as e:
+            print(f"Calibration error: {e}")
             with self.data_lock:
-                self.web_data['progress'] = progress
-                self.web_data['current_measurement']['power'] = power
-            self.emit_web_update()
-
-            time.sleep(0.1)  # Small delay
-
-        if self.calibrating and len(baseline_data) > 0:
-            self.baseline_level = np.mean(baseline_data)
-            self.baseline_std = np.std(baseline_data)
-
-            with self.data_lock:
-                self.web_data['status'] = 'calibration_complete'
-                self.web_data['progress'] = 100
-                self.web_data['baseline_calibrated'] = True
-                self.web_data['stats']['baseline_level'] = self.baseline_level
-                self.web_data['stats']['baseline_std'] = self.baseline_std
-
-            print(f"Baseline calibration complete: {self.baseline_level:.2f} ± {self.baseline_std:.2f} dB")
-        else:
-            with self.data_lock:
-                self.web_data['status'] = 'calibration_stopped'
+                self.web_data['status'] = 'calibration_error'
 
         self.calibrating = False
         self.emit_web_update()
