@@ -227,7 +227,7 @@ class HydrogenScanner:
 
         for _ in range(steps):
             motor.onestep(direction=direction, style=stepper.INTERLEAVE)
-            time.sleep(0.01)
+            time.sleep(0.02)
 
         # Update position
         if axis == 'x':
@@ -300,8 +300,8 @@ class HydrogenScanner:
         )
         self.scan_thread.start()
 
-    def run_scan_web(self, x_steps=15, y_steps=15, measurement_time=1.0,
-                     x_step_size=4, y_step_size=4):
+    def run_scan_web(self, x_steps=64, y_steps=64, measurement_time=1.0,
+                     x_step_size=1, y_step_size=1):
         """Web-controlled scan with configurable step sizes"""
         self.scanning = True
 
@@ -365,16 +365,16 @@ class HydrogenScanner:
 
                     self.emit_web_update()
 
-                    # Move Y (vertical scan) - move down through the column
+                    # Move Y (vertical scan) - move up through the column
                     if y < y_steps - 1:
-                        self.move_motor('y', stepper.BACKWARD, y_step_size)
+                        self.move_motor('y', stepper.FORWARD, y_step_size)
 
                     time.sleep(0.1)
 
                 # Move X (next column)
                 if x < x_steps - 1 and self.scanning:
-                    # Return to start of Y (top)
-                    self.move_motor('y', stepper.FORWARD, (y_steps - 1) * y_step_size)
+                    # Return to start of Y (bottom)
+                    self.move_motor('y', stepper.BACKWARD, (y_steps - 1) * y_step_size)
                     # Move one column right in X
                     self.move_motor('x', stepper.FORWARD, x_step_size)
 
@@ -395,7 +395,7 @@ class HydrogenScanner:
 
         self.scanning = False
         self.emit_web_update()
-        
+
     def update_plots(self):
         """Update all plots"""
         plots = {}

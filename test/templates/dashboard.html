@@ -240,7 +240,7 @@
 
         .plots-container {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            grid-template-columns: 1fr;
             gap: 20px;
             margin-top: 20px;
         }
@@ -262,6 +262,24 @@
             width: 100%;
             border-radius: 10px;
             box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+        }
+
+        /* Special styling for the skymap to make it bigger */
+        .plot-card.skymap {
+            grid-column: 1 / -1;
+            max-width: 100%;
+        }
+
+        .plot-card.skymap img {
+            max-height: 600px;
+            object-fit: contain;
+        }
+
+        /* Secondary plots in a row */
+        .secondary-plots {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px;
         }
 
         .measurement-card {
@@ -329,7 +347,7 @@
                 grid-template-columns: 1fr;
             }
 
-            .plots-container {
+            .secondary-plots {
                 grid-template-columns: 1fr;
             }
         }
@@ -457,19 +475,21 @@
     </div>
 
     <div class="plots-container">
-        <div class="plot-card" id="skymapCard" style="display: none;">
+        <div class="plot-card skymap" id="skymapCard" style="display: none;">
             <h3>🌌 Sky Map</h3>
             <img id="skymapPlot" src="" alt="Sky map loading...">
         </div>
 
-        <div class="plot-card" id="recentCard" style="display: none;">
-            <h3>📈 Recent Measurements</h3>
-            <img id="recentPlot" src="" alt="Recent data loading...">
-        </div>
+        <div class="secondary-plots">
+            <div class="plot-card" id="recentCard" style="display: none;">
+                <h3>📈 Recent Measurements</h3>
+                <img id="recentPlot" src="" alt="Recent data loading...">
+            </div>
 
-        <div class="plot-card" id="distributionCard" style="display: none;">
-            <h3>📊 Signal Distribution</h3>
-            <img id="distributionPlot" src="" alt="Distribution loading...">
+            <div class="plot-card" id="distributionCard" style="display: none;">
+                <h3>📊 Signal Distribution</h3>
+                <img id="distributionPlot" src="" alt="Distribution loading...">
+            </div>
         </div>
     </div>
 
