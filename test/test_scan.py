@@ -256,51 +256,37 @@ class HydrogenScanner:
 
         baseline_data = []
 
-        try:
-            for i in range(num_samples):
-                if not self.calibrating:  # Check for stop signal
-                    break
+        for i in range(num_samples):
+            if not self.calibrating:  # Check for stop signal
+                break
 
-                power = self.measure_power(measurement_time)
-                baseline_data.append(power)
+            power = self.measure_power(measurement_time)
+            baseline_data.append(power)
 
-                progress = (i + 1) / num_samples * 100
+            progress = (i + 1) / num_samples * 100
 
-                with self.data_lock:
-                    self.web_data['progress'] = progress
-                    # Fix: Ensure current_measurement exists and has proper structure
-                    if 'current_measurement' not in self.web_data or self.web_data['current_measurement'] is None:
-                        self.web_data['current_measurement'] = {}
-                    self.web_data['current_measurement']['power'] = power
-
-                    # Optional: Add calibration-specific info
-                    self.web_data['current_measurement']['calibration_sample'] = i + 1
-                    self.web_data['current_measurement']['total_samples'] = num_samples
-
-                self.emit_web_update()
-
-                time.sleep(0.1)  # Small delay
-
-            if self.calibrating and len(baseline_data) > 0:
-                self.baseline_level = np.mean(baseline_data)
-                self.baseline_std = np.std(baseline_data)
-
-                with self.data_lock:
-                    self.web_data['status'] = 'calibration_complete'
-                    self.web_data['progress'] = 100
-                    self.web_data['baseline_calibrated'] = True
-                    self.web_data['stats']['baseline_level'] = self.baseline_level
-                    self.web_data['stats']['baseline_std'] = self.baseline_std
-
-                print(f"Baseline calibration complete: {self.baseline_level:.2f} ± {self.baseline_std:.2f} dB")
-            else:
-                with self.data_lock:
-                    self.web_data['status'] = 'calibration_stopped'
-
-        except Exception as e:
-            print(f"Calibration error: {e}")
             with self.data_lock:
-                self.web_data['status'] = 'calibration_error'
+                self.web_data['progress'] = progress
+                self.web_data['current_measurement']['power'] = power
+            self.emit_web_update()
+
+            time.sleep(0.1)  # Small delay
+
+        if self.calibrating and len(baseline_data) > 0:
+            self.baseline_level = np.mean(baseline_data)
+            self.baseline_std = np.std(baseline_data)
+
+            with self.data_lock:
+                self.web_data['status'] = 'calibration_complete'
+                self.web_data['progress'] = 100
+                self.web_data['baseline_calibrated'] = True
+                self.web_data['stats']['baseline_level'] = self.baseline_level
+                self.web_data['stats']['baseline_std'] = self.baseline_std
+
+            print(f"Baseline calibration complete: {self.baseline_level:.2f} ± {self.baseline_std:.2f} dB")
+        else:
+            with self.data_lock:
+                self.web_data['status'] = 'calibration_stopped'
 
         self.calibrating = False
         self.emit_web_update()
@@ -316,7 +302,7 @@ class HydrogenScanner:
 
     def run_scan_web(self, x_steps=15, y_steps=15, measurement_time=1.0,
                      x_step_size=4, y_step_size=4):
-        """Web-controlled scan with configurable step sizes - column by column"""
+        """Web-controlled scan with configurable step sizes"""
         self.scanning = True
 
         with self.data_lock:
@@ -330,11 +316,11 @@ class HydrogenScanner:
         total_points = x_steps * y_steps
 
         try:
-            for x in range(x_steps):  # For each column
+            for y in range(y_steps):
                 if not self.scanning:
                     break
 
-                for y in range(y_steps):  # For each row in this column
+                for x in range(x_steps):
                     if not self.scanning:
                         break
 
@@ -379,18 +365,18 @@ class HydrogenScanner:
 
                     self.emit_web_update()
 
-                    # Move Y (down the column)
-                    if y < y_steps - 1:
-                        self.move_motor('y', stepper.FORWARD, y_step_size)
+                    # Move X (horizontal scan)
+                    if x < x_steps - 1:
+                        self.move_motor('x', stepper.FORWARD, x_step_size)
 
                     time.sleep(0.1)
 
-                # Move to next column
-                if x < x_steps - 1 and self.scanning:
-                    # Return to top of Y
-                    self.move_motor('y', stepper.BACKWARD, (y_steps - 1) * y_step_size)
-                    # Move one column right in X
-                    self.move_motor('x', stepper.FORWARD, x_step_size)
+                # Move Y (next row)
+                if y < y_steps - 1 and self.scanning:
+                    # Return to start of X
+                    self.move_motor('x', stepper.BACKWARD, (x_steps - 1) * x_step_size)
+                    # Move one row down in Y
+                    self.move_motor('y', stepper.FORWARD, y_step_size)
 
             if self.scanning:
                 with self.data_lock:
@@ -401,14 +387,6 @@ class HydrogenScanner:
             else:
                 with self.data_lock:
                     self.web_data['status'] = 'scan_stopped'
-
-            # Reset position to starting point (0,0)
-            if self.scanning:
-                print("Returning to origin (0,0)...")
-                # Reverse X movement
-                self.move_motor('x', stepper.BACKWARD, (x_steps - 1) * x_step_size)
-                # Y should already be at top, but ensure it's at 0
-                # (No Y movement needed since we reset Y at each column)
 
         except Exception as e:
             print(f"Scan error: {e}")
