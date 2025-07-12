@@ -1,12 +1,12 @@
 """
 Hydrogen line manual testing and background scanning with web dashboard for remote access
 """
-import sys
 import time
-import board
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib
+import board
+import scipy
 
 matplotlib.use('Agg')
 import io
@@ -18,7 +18,7 @@ import threading
 from collections import deque
 from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO, emit
-import json
+
 
 # Try to import RTL-SDR
 try:
@@ -59,8 +59,7 @@ class HydrogenScanner:
         self.config = {
             'center_freq': 1.42040575e9,
             'sample_rate': 2.048e6,
-            'gain': 'auto',
-            'samples_per_measurement': 256 * 1024
+            'gain': 30
         }
 
         # Data storage
@@ -102,7 +101,6 @@ class HydrogenScanner:
         self.calibrating = False
         self.scan_thread = None
         self.calibration_thread = None
-
         self.data_lock = threading.Lock()
 
         # Flask app with SocketIO
@@ -113,7 +111,6 @@ class HydrogenScanner:
 
     def setup_web_routes(self):
         """Setup Flask routes and SocketIO events"""
-
         @self.app.route('/')
         def dashboard():
             return render_template('dashboard.html')
@@ -232,7 +229,7 @@ class HydrogenScanner:
             sdr.center_freq = self.config['center_freq']
             sdr.gain = self.config['gain']
 
-            samples = sdr.read_samples(self.config['samples_per_measurement'])
+            samples = sdr.read_samples(int(self.config['sample_rate'] * measurement_time))
 
             # Compute power spectral density
             freqs, psd = scipy.signal.welch(samples, sdr.sample_rate, nperseg=1024)
@@ -244,7 +241,6 @@ class HydrogenScanner:
 
         except Exception as e:
             print(f"SDR error: {e}")
-            return self.measure_power_spectrum(measurement_time)  # Fallback to simulation
 
     def enhanced_measurement(self, measurement_time=1.0):
         """Enhanced measurement with spectral analysis"""
@@ -295,13 +291,13 @@ class HydrogenScanner:
             self.web_data['position'] = self.current_position.copy()
         self.emit_web_update()
 
-    def move_motor(self, axis, direction, steps=1):
+    def move_motor(self, axis, direction, steps=1, sleep=0.05):
         """Move motor and update position tracking"""
         motor = self.kit.stepper1 if axis == 'x' else self.kit.stepper2
 
         for _ in range(steps):
             motor.onestep(direction=direction, style=stepper.INTERLEAVE)
-            time.sleep(0.02)
+            time.sleep(sleep)
 
         # Update position
         if axis == 'x':
@@ -391,11 +387,11 @@ class HydrogenScanner:
         total_points = x_steps * y_steps
 
         try:
-            for x in range(x_steps):
+            for y in range(y_steps):
                 if not self.scanning:
                     break
 
-                for y in range(y_steps):
+                for x in range(x_steps):
                     if not self.scanning:
                         break
 
@@ -448,16 +444,14 @@ class HydrogenScanner:
 
                     self.emit_web_update()
 
-                    # Move Y (vertical scan)
-                    if y < y_steps - 1:
-                        self.move_motor('y', stepper.FORWARD, y_step_size)
-
-                    time.sleep(0.1)
+                    # Move X (horizontal sweep)
+                    if x < x_steps - 1:
+                        self.move_motor('x', stepper.FORWARD, x_step_size)
 
                 # Move X (next column)
-                if x < x_steps - 1 and self.scanning:
-                    self.move_motor('y', stepper.BACKWARD, (y_steps - 1) * y_step_size)
-                    self.move_motor('x', stepper.FORWARD, x_step_size)
+                if y < y_steps - 1 and self.scanning:
+                    self.move_motor('y', stepper.FORWARD, x_step_size)
+                    self.move_motor('x', stepper.BACKWARD, (y_steps - 1) * y_step_size)
 
             if self.scanning:
                 with self.data_lock:
@@ -629,32 +623,3 @@ class HydrogenScanner:
         print("Web-controlled scanner started at http://localhost:5000")
         return web_thread
 
-
-def main():
-    """Main execution function"""
-    print("Web-Controlled Hydrogen Line Scanner v4.0")
-    print("=" * 60)
-    print("All controls available through web interface")
-    print("Navigate to http://localhost:5000 to control the scanner")
-    print("=" * 60)
-
-    scanner = HydrogenScanner()
-
-    try:
-        # Start web server
-        scanner.start_web_server()
-
-        # Keep server running
-        while True:
-            time.sleep(1)
-
-    except KeyboardInterrupt:
-        print("\nShutting down...")
-    except Exception as e:
-        print(f"Error: {e}")
-        import traceback
-        traceback.print_exc()
-
-
-if __name__ == "__main__":
-    main()
