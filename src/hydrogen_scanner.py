@@ -1,41 +1,44 @@
 """
 Hydrogen line manual testing and background scanning with web dashboard for remote access
 """
-import time
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib
-import board
-import scipy
-
-matplotlib.use('Agg')
-import io
-import base64
-from datetime import datetime
-from adafruit_motorkit import MotorKit
-from adafruit_motor import stepper
 import threading
-from collections import deque
-from flask import Flask, render_template, jsonify, request
-from flask_socketio import SocketIO, emit
 import time
 import numpy as np
 import scipy.signal
-from contextlib import contextmanager
 import logging
+from contextlib import contextmanager
+from collections import deque
+from datetime import datetime
+import io
+import base64
+import matplotlib.pyplot as plt
+import json
+from flask import Flask, render_template, jsonify
+from flask_socketio import SocketIO, emit
+import signal
+import sys
 
-# Try to import RTL-SDR
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# RTL-SDR availability check
 try:
     from rtlsdr import RtlSdr
-
     RTL_SDR_AVAILABLE = True
 except ImportError:
     RTL_SDR_AVAILABLE = False
-    print("RTL-SDR not available, using simulation mode")
+    logger.warning("RTL-SDR not available, using simulation mode")
 
-# Configure logging to better track SDR issues
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Motor control
+try:
+    from adafruit_motor import stepper
+    from adafruit_motorkit import MotorKit
+    import board
+    MOTOR_AVAILABLE = True
+except ImportError:
+    MOTOR_AVAILABLE = False
+    logger.warning("Motor control not available")
 
 
 class SDRManager:
@@ -46,16 +49,22 @@ class SDRManager:
         self.sdr_lock = threading.Lock()
         self.sdr_instance = None
         self.last_used = 0
-        self.connection_timeout = 5.0  # seconds
+        self.connection_timeout = 5.0
         self.max_retries = 3
         self.retry_delay = 1.0
+        self._shutdown = False
 
     @contextmanager
     def get_sdr(self):
         """Context manager for safe SDR access"""
+        if self._shutdown:
+            raise RuntimeError("SDR Manager is shutting down")
+
         sdr = None
         try:
             with self.sdr_lock:
+                if self._shutdown:
+                    raise RuntimeError("SDR Manager is shutting down")
                 sdr = self._get_or_create_sdr()
                 yield sdr
         except Exception as e:
@@ -64,16 +73,16 @@ class SDRManager:
                 self._cleanup_sdr(sdr)
             raise
         finally:
-            # Don't close immediately, keep connection alive for a bit
-            self.last_used = time.time()
+            if not self._shutdown:
+                self.last_used = time.time()
 
     def _get_or_create_sdr(self):
         """Get existing SDR or create new one with proper initialization"""
-        if not RTL_SDR_AVAILABLE:
-            raise RuntimeError("RTL-SDR not available")
+        if not RTL_SDR_AVAILABLE or self._shutdown:
+            raise RuntimeError("RTL-SDR not available or shutting down")
 
         # If we have an existing connection, check if it's still good
-        if self.sdr_instance is not None:
+        if self.sdr_instance is not None and not self._shutdown:
             try:
                 # Test the connection
                 self.sdr_instance.get_center_freq()
@@ -85,6 +94,9 @@ class SDRManager:
 
         # Create new SDR connection with retries
         for attempt in range(self.max_retries):
+            if self._shutdown:
+                raise RuntimeError("SDR Manager is shutting down")
+
             try:
                 logger.info(f"Initializing SDR (attempt {attempt + 1}/{self.max_retries})")
 
@@ -92,13 +104,13 @@ class SDRManager:
 
                 # Configure with proper timing
                 sdr.sample_rate = self.config['sample_rate']
-                time.sleep(0.1)  # Allow hardware to settle
+                time.sleep(0.1)
 
                 sdr.center_freq = self.config['center_freq']
-                time.sleep(0.1)  # Allow PLL to lock
+                time.sleep(0.1)
 
                 sdr.gain = self.config['gain']
-                time.sleep(0.1)  # Allow gain to settle
+                time.sleep(0.1)
 
                 # Test the connection
                 test_freq = sdr.get_center_freq()
@@ -109,7 +121,7 @@ class SDRManager:
 
             except Exception as e:
                 logger.error(f"SDR initialization attempt {attempt + 1} failed: {e}")
-                if attempt < self.max_retries - 1:
+                if attempt < self.max_retries - 1 and not self._shutdown:
                     time.sleep(self.retry_delay)
                 else:
                     raise RuntimeError(f"Failed to initialize SDR after {self.max_retries} attempts")
@@ -125,6 +137,9 @@ class SDRManager:
 
     def cleanup(self):
         """Clean up all SDR resources"""
+        logger.info("Cleaning up SDR Manager...")
+        self._shutdown = True
+
         with self.sdr_lock:
             if self.sdr_instance:
                 self._cleanup_sdr(self.sdr_instance)
@@ -154,7 +169,10 @@ def detect_hydrogen_line(freqs, psd):
 
 class HydrogenScanner:
     def __init__(self):
-        self.kit = MotorKit(i2c=board.I2C())
+        if MOTOR_AVAILABLE:
+            self.kit = MotorKit(i2c=board.I2C())
+        else:
+            self.kit = None
 
         # Configuration
         self.config = {
@@ -200,10 +218,10 @@ class HydrogenScanner:
             'baseline_calibrated': False
         }
 
-        # Control state
-        self.scanning = False
-        self.calibrating = False
-        self.shutdown_requested = False
+        # Control state - using threading.Event for better control
+        self.shutdown_event = threading.Event()
+        self.scanning_event = threading.Event()
+        self.calibrating_event = threading.Event()
         self.scan_thread = None
         self.calibration_thread = None
         self.data_lock = threading.Lock()
@@ -214,6 +232,16 @@ class HydrogenScanner:
         self.socketio = SocketIO(self.app, cors_allowed_origins="*")
         self.setup_web_routes()
         self.setup_signal_handlers()
+
+    def check_should_continue(self):
+        """Check if operations should continue"""
+        return not self.shutdown_event.is_set()
+
+    def stop_current_operation(self):
+        """Stop current operation gracefully"""
+        self.scanning_event.clear()
+        self.calibrating_event.clear()
+        logger.info("Stopping current operation...")
 
     def measure_power_spectrum(self, measurement_time=1.0):
         """Measure power spectrum with improved error handling"""
@@ -232,8 +260,14 @@ class HydrogenScanner:
 
             return freqs, noise
 
+        if not self.check_should_continue():
+            raise RuntimeError("Operation cancelled")
+
         max_retries = 3
         for attempt in range(max_retries):
+            if not self.check_should_continue():
+                raise RuntimeError("Operation cancelled")
+
             try:
                 with self.sdr_manager.get_sdr() as sdr:
                     # Read samples with timeout protection
@@ -244,15 +278,15 @@ class HydrogenScanner:
 
                     # Compute power spectral density
                     freqs, psd = scipy.signal.welch(samples, sdr.sample_rate, nperseg=1024)
-                    freqs = freqs - sdr.sample_rate / 2  # Center at 0
-                    psd_db = 10 * np.log10(psd + 1e-12)  # Add small epsilon to avoid log(0)
+                    freqs = freqs - sdr.sample_rate / 2
+                    psd_db = 10 * np.log10(psd + 1e-12)
 
                     return freqs, psd_db
 
             except Exception as e:
                 logger.error(f"SDR measurement attempt {attempt + 1} failed: {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(0.5)  # Brief pause before retry
+                if attempt < max_retries - 1 and self.check_should_continue():
+                    time.sleep(0.5)
                 else:
                     logger.error("All SDR measurement attempts failed, using simulated data")
                     # Fall back to simulation
@@ -262,6 +296,9 @@ class HydrogenScanner:
 
     def enhanced_measurement(self, measurement_time=1.0):
         """Enhanced measurement with improved error handling"""
+        if not self.check_should_continue():
+            raise RuntimeError("Operation cancelled")
+
         try:
             freqs, psd = self.measure_power_spectrum(measurement_time)
 
@@ -295,100 +332,128 @@ class HydrogenScanner:
             return total_power, h_line_power
 
         except Exception as e:
+            if "Operation cancelled" in str(e):
+                raise
             logger.error(f"Enhanced measurement failed: {e}")
-            # Return safe fallback values
             return -45.0, 0.0
 
     def calibrate_baseline_web(self, num_samples=30, measurement_time=1.0):
-        """Web-controlled baseline calibration with improved error handling"""
-        self.calibrating = True
+        """Web-controlled baseline calibration with improved termination"""
+        if not self.calibrating_event.is_set():
+            return
+
         logger.info(f"Starting baseline calibration with {num_samples} samples")
 
-        with self.data_lock:
-            self.web_data['status'] = 'calibrating'
-            self.web_data['progress'] = 0
-            self.web_data['baseline_calibrated'] = False
-        self.emit_web_update()
+        try:
+            with self.data_lock:
+                self.web_data['status'] = 'calibrating'
+                self.web_data['progress'] = 0
+                self.web_data['baseline_calibrated'] = False
+            self.emit_web_update()
 
-        baseline_data = []
-        failed_measurements = 0
-        max_failures = num_samples // 3  # Allow up to 1/3 failures
+            baseline_data = []
+            failed_measurements = 0
+            max_failures = num_samples // 3
 
-        for i in range(num_samples):
-            if not self.calibrating or self.shutdown_requested:
-                break
-
-            try:
-                total_power, h_line_power = self.enhanced_measurement(measurement_time)
-                baseline_data.append(total_power)
-
-                progress = (i + 1) / num_samples * 100
-
-                with self.data_lock:
-                    self.web_data['progress'] = progress
-                    self.web_data['current_measurement'] = {
-                        'x': self.current_position['x'],
-                        'y': self.current_position['y'],
-                        'power': total_power,
-                        'h_line_power': h_line_power
-                    }
-                self.emit_web_update()
-
-                time.sleep(0.1)  # Small delay between measurements
-
-            except Exception as e:
-                logger.error(f"Calibration measurement {i + 1} failed: {e}")
-                failed_measurements += 1
-                if failed_measurements > max_failures:
-                    logger.error("Too many failed measurements, aborting calibration")
+            for i in range(num_samples):
+                if not self.calibrating_event.is_set() or not self.check_should_continue():
+                    logger.info("Calibration cancelled")
                     break
 
-        if self.calibrating and len(baseline_data) > num_samples // 2:
-            self.baseline_level = np.mean(baseline_data)
-            self.baseline_std = np.std(baseline_data)
+                try:
+                    total_power, h_line_power = self.enhanced_measurement(measurement_time)
+                    baseline_data.append(total_power)
 
+                    progress = (i + 1) / num_samples * 100
+
+                    with self.data_lock:
+                        self.web_data['progress'] = progress
+                        self.web_data['current_measurement'] = {
+                            'x': self.current_position['x'],
+                            'y': self.current_position['y'],
+                            'power': total_power,
+                            'h_line_power': h_line_power
+                        }
+                    self.emit_web_update()
+
+                    # Check for cancellation more frequently
+                    if not self.calibrating_event.is_set():
+                        break
+
+                    time.sleep(0.1)
+
+                except Exception as e:
+                    if "Operation cancelled" in str(e):
+                        logger.info("Calibration cancelled")
+                        break
+                    logger.error(f"Calibration measurement {i + 1} failed: {e}")
+                    failed_measurements += 1
+                    if failed_measurements > max_failures:
+                        logger.error("Too many failed measurements, aborting calibration")
+                        break
+
+            # Process results if we have enough data and weren't cancelled
+            if (self.calibrating_event.is_set() and
+                    self.check_should_continue() and
+                    len(baseline_data) > num_samples // 2):
+
+                self.baseline_level = np.mean(baseline_data)
+                self.baseline_std = np.std(baseline_data)
+
+                with self.data_lock:
+                    self.web_data['status'] = 'calibration_complete'
+                    self.web_data['progress'] = 100
+                    self.web_data['baseline_calibrated'] = True
+                    self.web_data['stats']['baseline_level'] = self.baseline_level
+                    self.web_data['stats']['baseline_std'] = self.baseline_std
+
+                logger.info(f"Baseline calibration complete: {self.baseline_level:.2f} ± {self.baseline_std:.2f} dB")
+            else:
+                with self.data_lock:
+                    if self.calibrating_event.is_set():
+                        self.web_data['status'] = 'calibration_failed'
+                    else:
+                        self.web_data['status'] = 'calibration_cancelled'
+                logger.info("Baseline calibration stopped or failed")
+
+        except Exception as e:
+            logger.error(f"Calibration error: {e}")
             with self.data_lock:
-                self.web_data['status'] = 'calibration_complete'
-                self.web_data['progress'] = 100
-                self.web_data['baseline_calibrated'] = True
-                self.web_data['stats']['baseline_level'] = self.baseline_level
-                self.web_data['stats']['baseline_std'] = self.baseline_std
-
-            logger.info(f"Baseline calibration complete: {self.baseline_level:.2f} ± {self.baseline_std:.2f} dB")
-        else:
-            with self.data_lock:
-                self.web_data['status'] = 'calibration_failed'
-            logger.error("Baseline calibration failed")
-
-        self.calibrating = False
-        self.emit_web_update()
+                self.web_data['status'] = 'calibration_error'
+        finally:
+            self.calibrating_event.clear()
+            self.emit_web_update()
 
     def run_scan_web(self, x_steps=64, y_steps=64, measurement_time=1.0,
                      x_step_size=1, y_step_size=1):
-        """Web-controlled scan with improved error handling"""
-        self.scanning = True
+        """Web-controlled scan with improved termination"""
+        if not self.scanning_event.is_set():
+            return
+
         logger.info(f"Starting scan: {x_steps}x{y_steps} points")
 
-        with self.data_lock:
-            self.web_data['status'] = 'scanning'
-            self.web_data['progress'] = 0
-        self.emit_web_update()
-
-        # Initialize
-        self.sky_map = np.zeros((y_steps, x_steps))
-        self.h_line_map = np.zeros((y_steps, x_steps))
-        self.scan_data = []
-        total_points = x_steps * y_steps
-        failed_measurements = 0
-        max_failures = total_points // 10  # Allow up to 10% failures
-
         try:
+            with self.data_lock:
+                self.web_data['status'] = 'scanning'
+                self.web_data['progress'] = 0
+            self.emit_web_update()
+
+            # Initialize
+            self.sky_map = np.zeros((y_steps, x_steps))
+            self.h_line_map = np.zeros((y_steps, x_steps))
+            self.scan_data = []
+            total_points = x_steps * y_steps
+            failed_measurements = 0
+            max_failures = total_points // 10
+
             for y in range(y_steps):
-                if not self.scanning or self.shutdown_requested:
+                if not self.scanning_event.is_set() or not self.check_should_continue():
+                    logger.info("Scan cancelled")
                     break
 
                 for x in range(x_steps):
-                    if not self.scanning or self.shutdown_requested:
+                    if not self.scanning_event.is_set() or not self.check_should_continue():
+                        logger.info("Scan cancelled")
                         break
 
                     try:
@@ -439,7 +504,14 @@ class HydrogenScanner:
 
                         self.emit_web_update()
 
+                        # Check for cancellation more frequently
+                        if not self.scanning_event.is_set():
+                            break
+
                     except Exception as e:
+                        if "Operation cancelled" in str(e):
+                            logger.info("Scan cancelled")
+                            break
                         logger.error(f"Scan measurement at ({x}, {y}) failed: {e}")
                         failed_measurements += 1
                         if failed_measurements > max_failures:
@@ -447,61 +519,69 @@ class HydrogenScanner:
                             break
 
                     # Move X (horizontal sweep)
-                    if x < x_steps - 1:
-                        self.move_motor('x', stepper.FORWARD, x_step_size)
+                    if x < x_steps - 1 and self.scanning_event.is_set():
+                        self.move_motor('x', stepper.FORWARD if MOTOR_AVAILABLE else None, x_step_size)
 
                 # Move Y (next row)
-                if y < y_steps - 1 and self.scanning:
-                    self.move_motor('y', stepper.FORWARD, y_step_size)
-                    self.move_motor('x', stepper.BACKWARD, (x_steps - 1) * x_step_size)
+                if (y < y_steps - 1 and
+                        self.scanning_event.is_set() and
+                        self.check_should_continue()):
+                    self.move_motor('y', stepper.FORWARD if MOTOR_AVAILABLE else None, y_step_size)
+                    self.move_motor('x', stepper.BACKWARD if MOTOR_AVAILABLE else None, (x_steps - 1) * x_step_size)
 
-            if self.scanning and not self.shutdown_requested:
-                with self.data_lock:
+            # Set final status
+            with self.data_lock:
+                if (self.scanning_event.is_set() and
+                        self.check_should_continue()):
                     self.web_data['status'] = 'scan_complete'
                     self.web_data['progress'] = 100
                     self.update_plots()
-                logger.info(f"Scan complete! {len(self.scan_data)} points collected")
-            else:
-                with self.data_lock:
-                    self.web_data['status'] = 'scan_stopped'
+                    logger.info(f"Scan complete! {len(self.scan_data)} points collected")
+                else:
+                    self.web_data['status'] = 'scan_cancelled'
+                    logger.info("Scan cancelled")
 
         except Exception as e:
             logger.error(f"Scan error: {e}")
             with self.data_lock:
                 self.web_data['status'] = 'scan_error'
-
-        self.scanning = False
-        self.emit_web_update()
+        finally:
+            self.scanning_event.clear()
+            self.emit_web_update()
 
     def shutdown(self):
         """Properly shutdown the scanner"""
         logger.info("Shutting down scanner...")
-        self.shutdown_requested = True
 
-        # Stop any running operations
-        self.scanning = False
-        self.calibrating = False
+        # Signal shutdown to all operations
+        self.shutdown_event.set()
+        self.stop_current_operation()
 
-        # Wait for threads to finish
+        # Wait for threads to finish with timeout
         if self.scan_thread and self.scan_thread.is_alive():
-            self.scan_thread.join(timeout=5)
+            logger.info("Waiting for scan thread to finish...")
+            self.scan_thread.join(timeout=10)
+            if self.scan_thread.is_alive():
+                logger.warning("Scan thread did not finish gracefully")
+
         if self.calibration_thread and self.calibration_thread.is_alive():
-            self.calibration_thread.join(timeout=5)
+            logger.info("Waiting for calibration thread to finish...")
+            self.calibration_thread.join(timeout=10)
+            if self.calibration_thread.is_alive():
+                logger.warning("Calibration thread did not finish gracefully")
 
         # Cleanup SDR resources
         self.sdr_manager.cleanup()
 
         logger.info("Scanner shutdown complete")
 
-    # Add signal handlers for graceful shutdown
     def setup_signal_handlers(self):
         """Setup signal handlers for graceful shutdown"""
-        import signal
 
         def signal_handler(signum, frame):
             logger.info(f"Received signal {signum}, shutting down...")
             self.shutdown()
-            exit(0)
+            sys.exit(0)
 
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
