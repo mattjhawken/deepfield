@@ -488,16 +488,29 @@ class HydrogenScanner:
 
         try:
             if plot_type == 'skymap' and self.sky_map is not None:
-                im = ax.imshow(self.sky_map, origin='lower', cmap='plasma', aspect='auto')
+                # Create masked array for display
+                plot_data = self.sky_map.copy()
+                plot_data[plot_data == 0] = np.nan
+
+                if np.all(np.isnan(plot_data)):
+                    plt.close(fig)
+                    return None  # Nothing to plot yet
+
+                # Use only valid data for color scaling
+                valid_min = np.nanmin(plot_data)
+                valid_max = np.nanmax(plot_data)
+
+                im = ax.imshow(plot_data, origin='lower', cmap='plasma', aspect='auto',
+                               vmin=valid_min, vmax=valid_max)
                 ax.set_title('Sky Map (dB above baseline)', fontsize=14)
                 ax.set_xlabel('Azimuth Steps', fontsize=12)
                 ax.set_ylabel('Elevation Steps', fontsize=12)
                 plt.colorbar(im, ax=ax, label='Signal Strength (dB)')
 
-                # Add detection markers
-                if self.baseline_std > 0:
-                    y_coords, x_coords = np.where(self.sky_map > 3 * self.baseline_std)
-                    ax.scatter(x_coords, y_coords, c='red', s=30, alpha=0.7, marker='o')
+            # # Add detection markers
+            # if self.baseline_std > 0:
+            #     y_coords, x_coords = np.where(self.sky_map > 3 * self.baseline_std)
+            #     ax.scatter(x_coords, y_coords, c='red', s=30, alpha=0.7, marker='o')
 
             elif plot_type == 'hydrogen_line' and len(self.h_line_history) > 0:
                 # Plot hydrogen line detections over time
