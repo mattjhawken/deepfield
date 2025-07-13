@@ -488,19 +488,11 @@ class HydrogenScanner:
 
         try:
             if plot_type == 'skymap' and self.sky_map is not None:
-                # Create masked array for display
-                plot_data = self.sky_map.copy()
-                plot_data[plot_data == 0] = np.nan
-
-                if np.all(np.isnan(plot_data)):
-                    plt.close(fig)
-                    return None  # Nothing to plot yet
-
                 # Use only valid data for color scaling
-                valid_min = np.nanmin(plot_data)
-                valid_max = np.nanmax(plot_data)
+                valid_min = np.nanmin(self.sky_map)
+                valid_max = np.nanmax(self.sky_map)
 
-                im = ax.imshow(plot_data, origin='lower', cmap='plasma', aspect='auto',
+                im = ax.imshow(self.sky_map, origin='lower', cmap='plasma', aspect='auto',
                                vmin=valid_min, vmax=valid_max)
                 ax.set_title('Sky Map (dB above baseline)', fontsize=14)
                 ax.set_xlabel('Azimuth Steps', fontsize=12)
