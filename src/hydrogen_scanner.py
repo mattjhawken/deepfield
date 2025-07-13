@@ -380,7 +380,7 @@ class HydrogenScanner:
         self.emit_web_update()
 
         # Initialize
-        self.sky_map = np.zeros((y_steps, x_steps))
+        self.sky_map = self.sky_map = np.full((y_steps, x_steps), np.nan)
         self.h_line_map = np.zeros((y_steps, x_steps))  # New H-line map
         self.scan_data = []
         total_points = x_steps * y_steps
