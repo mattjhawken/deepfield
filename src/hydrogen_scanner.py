@@ -446,12 +446,12 @@ class HydrogenScanner:
             failed_measurements = 0
             max_failures = total_points // 10
 
-            for y in range(y_steps):
+            for x in range(x_steps):
                 if not self.scanning_event.is_set() or not self.check_should_continue():
                     logger.info("Scan cancelled")
                     break
 
-                for x in range(x_steps):
+                for y in range(y_steps):
                     if not self.scanning_event.is_set() or not self.check_should_continue():
                         logger.info("Scan cancelled")
                         break
@@ -502,6 +502,9 @@ class HydrogenScanner:
                             if points_completed % 10 == 0:
                                 self.update_plots()
 
+                            if points_completed % 50 == 0:
+                                self.save_data()
+
                         self.emit_web_update()
 
                         # Check for cancellation more frequently
@@ -518,16 +521,16 @@ class HydrogenScanner:
                             logger.error("Too many failed measurements, aborting scan")
                             break
 
-                    # Move X (horizontal sweep)
-                    if x < x_steps - 1 and self.scanning_event.is_set():
-                        self.move_motor('x', stepper.FORWARD if MOTOR_AVAILABLE else None, x_step_size)
+                    # Move Y (vertical sweep)
+                    if y < y_steps - 1 and self.scanning_event.is_set():
+                        self.move_motor('y', stepper.FORWARD if MOTOR_AVAILABLE else None, y_step_size)
 
-                # Move Y (next row)
-                if (y < y_steps - 1 and
+                # Move X (next col)
+                if (x < x_steps - 1 and
                         self.scanning_event.is_set() and
                         self.check_should_continue()):
-                    self.move_motor('y', stepper.FORWARD if MOTOR_AVAILABLE else None, y_step_size)
-                    self.move_motor('x', stepper.BACKWARD if MOTOR_AVAILABLE else None, (x_steps - 1) * x_step_size)
+                    self.move_motor('y', stepper.BACKWARD if MOTOR_AVAILABLE else None, y_step_size)
+                    # self.move_motor('x', stepper.BACKWARD if MOTOR_AVAILABLE else None, (x_steps - 1) * x_step_size)
 
             # Set final status
             with self.data_lock:
@@ -742,7 +745,7 @@ class HydrogenScanner:
 
     def create_plot_image(self, plot_type='skymap'):
         """Create plot and return as base64 encoded image"""
-        fig, ax = plt.subplots(figsize=(10, 8))
+        fig, ax = plt.subplots(figsize=(18, 8))
 
         try:
             if plot_type == 'skymap' and self.sky_map is not None:
@@ -854,7 +857,7 @@ class HydrogenScanner:
     def save_data(self, filename_prefix=None):
         """Save scan data"""
         if not filename_prefix:
-            filename_prefix = datetime.now().strftime("scan_%Y%m%d_%H%M%S")
+            filename_prefix = datetime.now().strftime("scan_%Y%m%d_%H")
 
         saved_files = []
 
