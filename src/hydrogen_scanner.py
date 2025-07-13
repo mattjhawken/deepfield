@@ -18,7 +18,11 @@ import threading
 from collections import deque
 from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO, emit
-
+import time
+import numpy as np
+import scipy.signal
+from contextlib import contextmanager
+import logging
 
 # Try to import RTL-SDR
 try:
@@ -28,6 +32,103 @@ try:
 except ImportError:
     RTL_SDR_AVAILABLE = False
     print("RTL-SDR not available, using simulation mode")
+
+# Configure logging to better track SDR issues
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+class SDRManager:
+    """Thread-safe SDR resource manager with proper cleanup"""
+
+    def __init__(self, config):
+        self.config = config
+        self.sdr_lock = threading.Lock()
+        self.sdr_instance = None
+        self.last_used = 0
+        self.connection_timeout = 5.0  # seconds
+        self.max_retries = 3
+        self.retry_delay = 1.0
+
+    @contextmanager
+    def get_sdr(self):
+        """Context manager for safe SDR access"""
+        sdr = None
+        try:
+            with self.sdr_lock:
+                sdr = self._get_or_create_sdr()
+                yield sdr
+        except Exception as e:
+            logger.error(f"SDR error: {e}")
+            if sdr:
+                self._cleanup_sdr(sdr)
+            raise
+        finally:
+            # Don't close immediately, keep connection alive for a bit
+            self.last_used = time.time()
+
+    def _get_or_create_sdr(self):
+        """Get existing SDR or create new one with proper initialization"""
+        if not RTL_SDR_AVAILABLE:
+            raise RuntimeError("RTL-SDR not available")
+
+        # If we have an existing connection, check if it's still good
+        if self.sdr_instance is not None:
+            try:
+                # Test the connection
+                self.sdr_instance.get_center_freq()
+                return self.sdr_instance
+            except:
+                logger.warning("Existing SDR connection failed, creating new one")
+                self._cleanup_sdr(self.sdr_instance)
+                self.sdr_instance = None
+
+        # Create new SDR connection with retries
+        for attempt in range(self.max_retries):
+            try:
+                logger.info(f"Initializing SDR (attempt {attempt + 1}/{self.max_retries})")
+
+                sdr = RtlSdr()
+
+                # Configure with proper timing
+                sdr.sample_rate = self.config['sample_rate']
+                time.sleep(0.1)  # Allow hardware to settle
+
+                sdr.center_freq = self.config['center_freq']
+                time.sleep(0.1)  # Allow PLL to lock
+
+                sdr.gain = self.config['gain']
+                time.sleep(0.1)  # Allow gain to settle
+
+                # Test the connection
+                test_freq = sdr.get_center_freq()
+                logger.info(f"SDR initialized successfully at {test_freq} Hz")
+
+                self.sdr_instance = sdr
+                return sdr
+
+            except Exception as e:
+                logger.error(f"SDR initialization attempt {attempt + 1} failed: {e}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.retry_delay)
+                else:
+                    raise RuntimeError(f"Failed to initialize SDR after {self.max_retries} attempts")
+
+    def _cleanup_sdr(self, sdr):
+        """Properly cleanup SDR resources"""
+        if sdr:
+            try:
+                sdr.close()
+                logger.info("SDR connection closed")
+            except:
+                pass
+
+    def cleanup(self):
+        """Clean up all SDR resources"""
+        with self.sdr_lock:
+            if self.sdr_instance:
+                self._cleanup_sdr(self.sdr_instance)
+                self.sdr_instance = None
 
 
 def detect_hydrogen_line(freqs, psd):
@@ -59,8 +160,11 @@ class HydrogenScanner:
         self.config = {
             'center_freq': 1.42040575e9,
             'sample_rate': 2.048e6,
-            'gain': 30
+            'gain': 35
         }
+
+        # Initialize SDR manager
+        self.sdr_manager = SDRManager(self.config)
 
         # Data storage
         self.baseline_level = 0.0
@@ -69,9 +173,9 @@ class HydrogenScanner:
         self.sky_map = None
         self.live_data = deque(maxlen=100)
         self.current_position = {'x': 0, 'y': 0}
-        self.spectrum_history = deque(maxlen=100)  # Store recent spectra
-        self.h_line_history = deque(maxlen=100)  # Store H-line detections
-        self.detection_log = []  # Log of significant detections
+        self.spectrum_history = deque(maxlen=100)
+        self.h_line_history = deque(maxlen=100)
+        self.detection_log = []
         self.current_spectrum = None
 
         # Web dashboard data
@@ -99,6 +203,7 @@ class HydrogenScanner:
         # Control state
         self.scanning = False
         self.calibrating = False
+        self.shutdown_requested = False
         self.scan_thread = None
         self.calibration_thread = None
         self.data_lock = threading.Lock()
@@ -108,12 +213,304 @@ class HydrogenScanner:
         self.app.config['SECRET_KEY'] = 'hydrogen_scanner_secret'
         self.socketio = SocketIO(self.app, cors_allowed_origins="*")
         self.setup_web_routes()
+        self.setup_signal_handlers()
+
+    def measure_power_spectrum(self, measurement_time=1.0):
+        """Measure power spectrum with improved error handling"""
+        if not RTL_SDR_AVAILABLE:
+            # Simulate realistic H-line spectrum
+            freqs = np.linspace(-1e6, 1e6, 1024)
+            noise = np.random.normal(-45, 2, len(freqs))
+
+            # Add hydrogen line peak
+            if np.random.random() < 0.15:
+                h_line_idx = len(freqs) // 2
+                width = 20
+                amplitude = np.random.normal(5, 1)
+                gaussian = amplitude * np.exp(-0.5 * ((np.arange(len(freqs)) - h_line_idx) / width) ** 2)
+                noise += gaussian
+
+            return freqs, noise
+
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                with self.sdr_manager.get_sdr() as sdr:
+                    # Read samples with timeout protection
+                    samples = sdr.read_samples(int(self.config['sample_rate'] * measurement_time))
+
+                    if len(samples) == 0:
+                        raise RuntimeError("No samples received from SDR")
+
+                    # Compute power spectral density
+                    freqs, psd = scipy.signal.welch(samples, sdr.sample_rate, nperseg=1024)
+                    freqs = freqs - sdr.sample_rate / 2  # Center at 0
+                    psd_db = 10 * np.log10(psd + 1e-12)  # Add small epsilon to avoid log(0)
+
+                    return freqs, psd_db
+
+            except Exception as e:
+                logger.error(f"SDR measurement attempt {attempt + 1} failed: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(0.5)  # Brief pause before retry
+                else:
+                    logger.error("All SDR measurement attempts failed, using simulated data")
+                    # Fall back to simulation
+                    freqs = np.linspace(-1e6, 1e6, 1024)
+                    noise = np.random.normal(-45, 2, len(freqs))
+                    return freqs, noise
+
+    def enhanced_measurement(self, measurement_time=1.0):
+        """Enhanced measurement with improved error handling"""
+        try:
+            freqs, psd = self.measure_power_spectrum(measurement_time)
+
+            # Store spectrum
+            self.current_spectrum = (freqs, psd)
+            self.spectrum_history.append(psd)
+
+            # Detect hydrogen line
+            h_line_power = detect_hydrogen_line(freqs, psd)
+            total_power = np.mean(psd)
+
+            # Store H-line measurement
+            self.h_line_history.append({
+                'timestamp': time.time(),
+                'h_line_power': h_line_power,
+                'total_power': total_power,
+                'position': self.current_position.copy()
+            })
+
+            # Log significant detections
+            if self.baseline_std > 0 and h_line_power > 3 * self.baseline_std:
+                detection = {
+                    'timestamp': time.time(),
+                    'position': self.current_position.copy(),
+                    'h_line_power': h_line_power,
+                    'total_power': total_power,
+                    'significance': h_line_power / self.baseline_std
+                }
+                self.detection_log.append(detection)
+
+            return total_power, h_line_power
+
+        except Exception as e:
+            logger.error(f"Enhanced measurement failed: {e}")
+            # Return safe fallback values
+            return -45.0, 0.0
+
+    def calibrate_baseline_web(self, num_samples=30, measurement_time=1.0):
+        """Web-controlled baseline calibration with improved error handling"""
+        self.calibrating = True
+        logger.info(f"Starting baseline calibration with {num_samples} samples")
+
+        with self.data_lock:
+            self.web_data['status'] = 'calibrating'
+            self.web_data['progress'] = 0
+            self.web_data['baseline_calibrated'] = False
+        self.emit_web_update()
+
+        baseline_data = []
+        failed_measurements = 0
+        max_failures = num_samples // 3  # Allow up to 1/3 failures
+
+        for i in range(num_samples):
+            if not self.calibrating or self.shutdown_requested:
+                break
+
+            try:
+                total_power, h_line_power = self.enhanced_measurement(measurement_time)
+                baseline_data.append(total_power)
+
+                progress = (i + 1) / num_samples * 100
+
+                with self.data_lock:
+                    self.web_data['progress'] = progress
+                    self.web_data['current_measurement'] = {
+                        'x': self.current_position['x'],
+                        'y': self.current_position['y'],
+                        'power': total_power,
+                        'h_line_power': h_line_power
+                    }
+                self.emit_web_update()
+
+                time.sleep(0.1)  # Small delay between measurements
+
+            except Exception as e:
+                logger.error(f"Calibration measurement {i + 1} failed: {e}")
+                failed_measurements += 1
+                if failed_measurements > max_failures:
+                    logger.error("Too many failed measurements, aborting calibration")
+                    break
+
+        if self.calibrating and len(baseline_data) > num_samples // 2:
+            self.baseline_level = np.mean(baseline_data)
+            self.baseline_std = np.std(baseline_data)
+
+            with self.data_lock:
+                self.web_data['status'] = 'calibration_complete'
+                self.web_data['progress'] = 100
+                self.web_data['baseline_calibrated'] = True
+                self.web_data['stats']['baseline_level'] = self.baseline_level
+                self.web_data['stats']['baseline_std'] = self.baseline_std
+
+            logger.info(f"Baseline calibration complete: {self.baseline_level:.2f} ± {self.baseline_std:.2f} dB")
+        else:
+            with self.data_lock:
+                self.web_data['status'] = 'calibration_failed'
+            logger.error("Baseline calibration failed")
+
+        self.calibrating = False
+        self.emit_web_update()
+
+    def run_scan_web(self, x_steps=64, y_steps=64, measurement_time=1.0,
+                     x_step_size=1, y_step_size=1):
+        """Web-controlled scan with improved error handling"""
+        self.scanning = True
+        logger.info(f"Starting scan: {x_steps}x{y_steps} points")
+
+        with self.data_lock:
+            self.web_data['status'] = 'scanning'
+            self.web_data['progress'] = 0
+        self.emit_web_update()
+
+        # Initialize
+        self.sky_map = np.zeros((y_steps, x_steps))
+        self.h_line_map = np.zeros((y_steps, x_steps))
+        self.scan_data = []
+        total_points = x_steps * y_steps
+        failed_measurements = 0
+        max_failures = total_points // 10  # Allow up to 10% failures
+
+        try:
+            for y in range(y_steps):
+                if not self.scanning or self.shutdown_requested:
+                    break
+
+                for x in range(x_steps):
+                    if not self.scanning or self.shutdown_requested:
+                        break
+
+                    try:
+                        # Enhanced measurement with retry logic
+                        total_power, h_line_power = self.enhanced_measurement(measurement_time)
+                        calibrated_power = total_power - self.baseline_level
+
+                        # Store data
+                        self.scan_data.append({
+                            'x': x, 'y': y,
+                            'raw_power': total_power,
+                            'calibrated_power': calibrated_power,
+                            'h_line_power': h_line_power,
+                            'timestamp': time.time()
+                        })
+
+                        self.sky_map[y, x] = calibrated_power
+                        self.h_line_map[y, x] = h_line_power
+
+                        # Update web data
+                        points_completed = len(self.scan_data)
+                        progress = (points_completed / total_points) * 100
+
+                        with self.data_lock:
+                            self.web_data['current_measurement'] = {
+                                'x': x, 'y': y,
+                                'power': calibrated_power,
+                                'h_line_power': h_line_power
+                            }
+                            self.web_data['progress'] = progress
+
+                            # Update statistics
+                            if self.baseline_std > 0:
+                                h_line_detections = sum(
+                                    1 for d in self.scan_data if d['h_line_power'] > 3 * self.baseline_std)
+                                self.web_data['stats'].update({
+                                    'h_line_detections': h_line_detections,
+                                    'avg_h_line_strength': float(np.mean([d['h_line_power'] for d in self.scan_data])),
+                                    'peak_h_line_strength': float(np.max([d['h_line_power'] for d in self.scan_data])),
+                                    'detections_3sigma': int(np.sum(self.sky_map > 3 * self.baseline_std)),
+                                    'detections_5sigma': int(np.sum(self.sky_map > 5 * self.baseline_std)),
+                                    'max_signal': float(np.max(self.sky_map)),
+                                    'total_points': len(self.scan_data)
+                                })
+
+                            if points_completed % 10 == 0:
+                                self.update_plots()
+
+                        self.emit_web_update()
+
+                    except Exception as e:
+                        logger.error(f"Scan measurement at ({x}, {y}) failed: {e}")
+                        failed_measurements += 1
+                        if failed_measurements > max_failures:
+                            logger.error("Too many failed measurements, aborting scan")
+                            break
+
+                    # Move X (horizontal sweep)
+                    if x < x_steps - 1:
+                        self.move_motor('x', stepper.FORWARD, x_step_size)
+
+                # Move Y (next row)
+                if y < y_steps - 1 and self.scanning:
+                    self.move_motor('y', stepper.FORWARD, y_step_size)
+                    self.move_motor('x', stepper.BACKWARD, (x_steps - 1) * x_step_size)
+
+            if self.scanning and not self.shutdown_requested:
+                with self.data_lock:
+                    self.web_data['status'] = 'scan_complete'
+                    self.web_data['progress'] = 100
+                    self.update_plots()
+                logger.info(f"Scan complete! {len(self.scan_data)} points collected")
+            else:
+                with self.data_lock:
+                    self.web_data['status'] = 'scan_stopped'
+
+        except Exception as e:
+            logger.error(f"Scan error: {e}")
+            with self.data_lock:
+                self.web_data['status'] = 'scan_error'
+
+        self.scanning = False
+        self.emit_web_update()
+
+    def shutdown(self):
+        """Properly shutdown the scanner"""
+        logger.info("Shutting down scanner...")
+        self.shutdown_requested = True
+
+        # Stop any running operations
+        self.scanning = False
+        self.calibrating = False
+
+        # Wait for threads to finish
+        if self.scan_thread and self.scan_thread.is_alive():
+            self.scan_thread.join(timeout=5)
+        if self.calibration_thread and self.calibration_thread.is_alive():
+            self.calibration_thread.join(timeout=5)
+
+        # Cleanup SDR resources
+        self.sdr_manager.cleanup()
+
+        logger.info("Scanner shutdown complete")
+
+    # Add signal handlers for graceful shutdown
+    def setup_signal_handlers(self):
+        """Setup signal handlers for graceful shutdown"""
+        import signal
+
+        def signal_handler(signum, frame):
+            logger.info(f"Received signal {signum}, shutting down...")
+            self.shutdown()
+            exit(0)
+
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
 
     def setup_web_routes(self):
         """Setup Flask routes and SocketIO events"""
         @self.app.route('/')
         def dashboard():
-            return render_template('dashboard.html')
+            return render_template('../templates/dashboard.html')
 
         @self.app.route('/api/data')
         def get_data():
@@ -206,92 +603,23 @@ class HydrogenScanner:
         with self.data_lock:
             self.socketio.emit('data_update', self.web_data)
 
-    def measure_power_spectrum(self, measurement_time=1.0):
-        """Measure power spectrum instead of just total power"""
-        if not RTL_SDR_AVAILABLE:
-            # Simulate realistic H-line spectrum
-            freqs = np.linspace(-1e6, 1e6, 1024)  # ±1MHz around center
-            noise = np.random.normal(-45, 2, len(freqs))
-
-            # Add hydrogen line peak
-            if np.random.random() < 0.15:
-                h_line_idx = len(freqs) // 2  # Center frequency
-                width = 20  # Line width in bins
-                amplitude = np.random.normal(5, 1)
-                gaussian = amplitude * np.exp(-0.5 * ((np.arange(len(freqs)) - h_line_idx) / width) ** 2)
-                noise += gaussian
-
-            return freqs, noise
-
-        try:
-            sdr = RtlSdr()
-            sdr.sample_rate = self.config['sample_rate']
-            sdr.center_freq = self.config['center_freq']
-            sdr.gain = self.config['gain']
-
-            samples = sdr.read_samples(int(self.config['sample_rate'] * measurement_time))
-
-            # Compute power spectral density
-            freqs, psd = scipy.signal.welch(samples, sdr.sample_rate, nperseg=1024)
-            freqs = freqs - sdr.sample_rate / 2  # Center at 0
-            psd_db = 10 * np.log10(psd)
-
-            sdr.close()
-            return freqs, psd_db
-
-        except Exception as e:
-            print(f"SDR error: {e}")
-
-    def enhanced_measurement(self, measurement_time=1.0):
-        """Enhanced measurement with spectral analysis"""
-        freqs, psd = self.measure_power_spectrum(measurement_time)
-
-        # Store spectrum
-        self.current_spectrum = (freqs, psd)
-        self.spectrum_history.append(psd)
-
-        # Detect hydrogen line
-        h_line_power = detect_hydrogen_line(freqs, psd)
-        total_power = np.mean(psd)
-
-        # Store H-line measurement
-        self.h_line_history.append({
-            'timestamp': time.time(),
-            'h_line_power': h_line_power,
-            'total_power': total_power,
-            'position': self.current_position.copy()
-        })
-
-        # Log significant detections
-        if h_line_power > 3 * self.baseline_std:
-            detection = {
-                'timestamp': time.time(),
-                'position': self.current_position.copy(),
-                'h_line_power': h_line_power,
-                'total_power': total_power,
-                'significance': h_line_power / self.baseline_std if self.baseline_std > 0 else 0
-            }
-            self.detection_log.append(detection)
-
-        return total_power, h_line_power
-
     def move_motor_web(self, direction, steps=1):
         """Move motor from web interface"""
         if direction == 'up':
-            self.move_motor('y', stepper.BACKWARD, steps)
+            self.move_motor('y', stepper.BACKWARD, steps, 0.05)
         elif direction == 'down':
-            self.move_motor('y', stepper.FORWARD, steps)
+            self.move_motor('y', stepper.FORWARD, steps, 0.05)
         elif direction == 'left':
-            self.move_motor('x', stepper.BACKWARD, steps)
+            self.move_motor('x', stepper.BACKWARD, steps, 0.05)
         elif direction == 'right':
-            self.move_motor('x', stepper.FORWARD, steps)
+            self.move_motor('x', stepper.FORWARD, steps, 0.05)
 
         # Update position in web data
         with self.data_lock:
             self.web_data['position'] = self.current_position.copy()
         self.emit_web_update()
 
-    def move_motor(self, axis, direction, steps=1, sleep=0.05):
+    def move_motor(self, axis, direction, steps=1, sleep=0.02):
         """Move motor and update position tracking"""
         motor = self.kit.stepper1 if axis == 'x' else self.kit.stepper2
 
@@ -314,53 +642,6 @@ class HydrogenScanner:
         )
         self.calibration_thread.start()
 
-    def calibrate_baseline_web(self, num_samples=30, measurement_time=1.0):
-        """Web-controlled baseline calibration"""
-        self.calibrating = True
-
-        with self.data_lock:
-            self.web_data['status'] = 'calibrating'
-            self.web_data['progress'] = 0
-            self.web_data['baseline_calibrated'] = False
-        self.emit_web_update()
-
-        baseline_data = []
-
-        for i in range(num_samples):
-            if not self.calibrating:  # Check for stop signal
-                break
-
-            power = self.enhanced_measurement(measurement_time)
-            baseline_data.append(power)
-
-            progress = (i + 1) / num_samples * 100
-
-            with self.data_lock:
-                self.web_data['progress'] = progress
-                self.web_data['current_measurement']['power'] = power
-            self.emit_web_update()
-
-            time.sleep(0.1)  # Small delay
-
-        if self.calibrating and len(baseline_data) > 0:
-            self.baseline_level = np.mean(baseline_data)
-            self.baseline_std = np.std(baseline_data)
-
-            with self.data_lock:
-                self.web_data['status'] = 'calibration_complete'
-                self.web_data['progress'] = 100
-                self.web_data['baseline_calibrated'] = True
-                self.web_data['stats']['baseline_level'] = self.baseline_level
-                self.web_data['stats']['baseline_std'] = self.baseline_std
-
-            print(f"Baseline calibration complete: {self.baseline_level:.2f} ± {self.baseline_std:.2f} dB")
-        else:
-            with self.data_lock:
-                self.web_data['status'] = 'calibration_stopped'
-
-        self.calibrating = False
-        self.emit_web_update()
-
     def start_scan_thread(self, x_steps, y_steps, measurement_time):
         """Start scan in separate thread"""
         self.scan_thread = threading.Thread(
@@ -369,107 +650,6 @@ class HydrogenScanner:
             daemon=True
         )
         self.scan_thread.start()
-
-    def run_scan_web(self, x_steps=64, y_steps=64, measurement_time=1.0,
-                     x_step_size=1, y_step_size=1):
-        """Web-controlled scan with hydrogen line monitoring"""
-        self.scanning = True
-
-        with self.data_lock:
-            self.web_data['status'] = 'scanning'
-            self.web_data['progress'] = 0
-        self.emit_web_update()
-
-        # Initialize
-        self.sky_map = np.zeros((y_steps, x_steps))
-        self.h_line_map = np.zeros((y_steps, x_steps))  # New H-line map
-        self.scan_data = []
-        total_points = x_steps * y_steps
-
-        try:
-            for y in range(y_steps):
-                if not self.scanning:
-                    break
-
-                for x in range(x_steps):
-                    if not self.scanning:
-                        break
-
-                    # Enhanced measurement
-                    total_power, h_line_power = self.enhanced_measurement(measurement_time)
-                    calibrated_power = total_power - self.baseline_level
-
-                    # Store data
-                    self.scan_data.append({
-                        'x': x, 'y': y,
-                        'raw_power': total_power,
-                        'calibrated_power': calibrated_power,
-                        'h_line_power': h_line_power,
-                        'timestamp': time.time()
-                    })
-
-                    self.sky_map[y, x] = calibrated_power
-                    self.h_line_map[y, x] = h_line_power  # Store H-line data
-                    self.live_data.append(calibrated_power)
-
-                    # Update web data
-                    points_completed = len(self.scan_data)
-                    progress = (points_completed / total_points) * 100
-
-                    with self.data_lock:
-                        self.web_data['current_measurement'] = {
-                            'x': x, 'y': y,
-                            'power': calibrated_power,
-                            'h_line_power': h_line_power
-                        }
-                        self.web_data['progress'] = progress
-
-                        # Update H-line statistics
-                        h_line_detections = sum(1 for d in self.scan_data if d['h_line_power'] > 3 * self.baseline_std)
-                        avg_h_line = np.mean([d['h_line_power'] for d in self.scan_data])
-                        peak_h_line = max([d['h_line_power'] for d in self.scan_data])
-
-                        self.web_data['stats'].update({
-                            'h_line_detections': h_line_detections,
-                            'avg_h_line_strength': float(avg_h_line),
-                            'peak_h_line_strength': float(peak_h_line),
-                            'detections_3sigma': int(np.sum(self.sky_map > 3 * self.baseline_std)),
-                            'detections_5sigma': int(np.sum(self.sky_map > 5 * self.baseline_std)),
-                            'max_signal': float(np.max(self.sky_map)),
-                            'total_points': len(self.scan_data)
-                        })
-
-                        if points_completed % 10 == 0:
-                            self.update_plots()
-
-                    self.emit_web_update()
-
-                    # Move X (horizontal sweep)
-                    if x < x_steps - 1:
-                        self.move_motor('x', stepper.FORWARD, x_step_size)
-
-                # Move X (next column)
-                if y < y_steps - 1 and self.scanning:
-                    self.move_motor('y', stepper.FORWARD, x_step_size)
-                    self.move_motor('x', stepper.BACKWARD, (y_steps - 1) * y_step_size)
-
-            if self.scanning:
-                with self.data_lock:
-                    self.web_data['status'] = 'scan_complete'
-                    self.web_data['progress'] = 100
-                    self.update_plots()
-                print(f"Scan complete! {len(self.scan_data)} points collected")
-            else:
-                with self.data_lock:
-                    self.web_data['status'] = 'scan_stopped'
-
-        except Exception as e:
-            print(f"Scan error: {e}")
-            with self.data_lock:
-                self.web_data['status'] = 'scan_error'
-
-        self.scanning = False
-        self.emit_web_update()
 
     def update_plots(self):
         """Update all plots"""
@@ -622,4 +802,3 @@ class HydrogenScanner:
         web_thread.start()
         print("Web-controlled scanner started at http://localhost:5000")
         return web_thread
-

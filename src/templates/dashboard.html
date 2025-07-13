@@ -704,8 +704,8 @@
 
         <div class="secondary-plots">
             <div class="plot-card" id="recentCard" style="display: none;">
-                <h3>📈 Recent Measurements</h3>
-                <img id="recentPlot" src="" alt="Recent data loading...">
+                <h3>📈 Hydrogen Line</h3>
+                <img id="hydrogenPlot" src="" alt="Recent data loading...">
             </div>
 
             <div class="plot-card" id="distributionCard" style="display: none;">
@@ -919,8 +919,8 @@
                 document.getElementById('skymapCard').style.display = 'block';
             }
 
-            if (plots.recent) {
-                document.getElementById('recentPlot').src = plots.recent;
+            if (plots.hydrogen_line) {
+                document.getElementById('hydrogenPlot').src = plots.hydrogen_line;
                 document.getElementById('recentCard').style.display = 'block';
             }
 

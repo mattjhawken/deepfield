@@ -20,8 +20,11 @@ def main():
         scanner.start_web_server()
 
         # Keep server running
-        while True:
-            time.sleep(1)
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            scanner.shutdown()
 
     except KeyboardInterrupt:
         print("\nShutting down...")

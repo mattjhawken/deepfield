@@ -5,8 +5,8 @@
 - M3 Threaded Inserts + Screws (20x)
 
 ### Computer bits
-- RTK GPS: U-blox Zed F9P (https://www.u-blox.com/en/product/zed-f9p-module) (TMC2209 or TMC5160 may be better driver)
-- AdaFruit DRV8833: https://www.adafruit.com/product/3297
+- RTK GPS: https://www.sparkfun.com/sparkfun-gps-rtk-sma-breakout-zed-f9p-qwiic.html
+- AdaFruit DRV8833: https://www.adafruit.com/product/3297 (TMC2209 or TMC5160 are better?)
 - RaspberryPi 4+
 
 ### Antenna
