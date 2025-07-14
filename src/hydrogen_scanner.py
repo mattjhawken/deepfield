@@ -380,7 +380,7 @@ class HydrogenScanner:
         self.emit_web_update()
 
         # Initialize
-        self.sky_map = self.sky_map = np.full((y_steps, x_steps), np.nan)
+        self.sky_map = np.full((y_steps, x_steps), np.nan)
         self.h_line_map = np.zeros((y_steps, x_steps))  # New H-line map
         self.scan_data = []
         total_points = x_steps * y_steps
@@ -488,11 +488,14 @@ class HydrogenScanner:
 
         try:
             if plot_type == 'skymap' and self.sky_map is not None:
-                # Use only valid data for color scaling
+                # Get valid min and max ignoring NaNs
                 valid_min = np.nanmin(self.sky_map)
                 valid_max = np.nanmax(self.sky_map)
 
-                im = ax.imshow(self.sky_map, origin='lower', cmap='plasma', aspect='auto',
+                # Replace NaNs with 0 for display
+                display_data = np.nan_to_num(self.sky_map, nan=0.0)
+
+                im = ax.imshow(display_data, origin='lower', cmap='plasma', aspect='auto',
                                vmin=valid_min, vmax=valid_max)
                 ax.set_title('Sky Map (dB above baseline)', fontsize=14)
                 ax.set_xlabel('Azimuth Steps', fontsize=12)
