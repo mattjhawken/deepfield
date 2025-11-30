@@ -63,4 +63,16 @@ Distance D7-D8: 69.7 mm
 Length D9: 89.3 mm
 Director position D9 (R-D9): 526 mm
 Distance D8-D9: 72.8 mm
+-------------------------------------------------------------
+Length D10: 79.9 mm
+Director position D10 (R-D10): 602 mm
+Distance D9-D10: 76 mm
+-------------------------------------------------------------
+Length D11: 79.4 mm
+Director position D11 (R-D11): 681 mm
+Distance D10-D11: 79.2 mm
+-------------------------------------------------------------
+Length D12: 78.9 mm
+Director position D12 (R-D12): 762 mm
+Distance D11-D12: 81.3 mm
 ```
