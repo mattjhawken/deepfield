@@ -1,7 +1,0 @@
-matplotlib
-flask
-flask-socketio
-scipy
-board
-adafruit-circuitpython-motorkit
-pyrtlsdr
